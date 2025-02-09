@@ -34,14 +34,14 @@ canvas_height = 250
 canvas = tk.Canvas(root1, width=canvas_width, height=canvas_height)
 canvas.pack(fill="both", expand=True)
 
-image_path1 = "C:\\Users\\Furkan\\Desktop\\git\\phd\\GPS-Processing\\images.jpg"
+image_path1 = "C:\\Users\\Furkan\\Desktop\\git\phd\\GPS-Processing\\images.jpg"
 bg_image1 = Image.open(image_path1)
 tk_image1 = ImageTk.PhotoImage(bg_image1)
 
 x1, y1 = center_image(canvas, tk_image1, canvas_width, canvas_height)
 canvas.create_image(x1, y1, image=tk_image1, anchor="nw")
 
-image_path2 = "C:\\Users\\Furkan\\Desktop\\git\\phd\\GPS-Processing\\images1.jpg"
+image_path2 = "C:\\Users\\Furkan\\Desktop\\git\phd\\GPS-Processing\\images1.jpg"
 transparency = 0.1
 tk_image2 = image_transparency(image_path2, transparency)
 
