@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "togu-gps-processing"
+version = "2.0.0"
+description = "Modular experimental GPS float PPP processing"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.21", "pandas>=1.4", "openpyxl>=3.0"]
+
+[project.scripts]
+togu-gps = "gps_processing.cli:main"
+togu-gps-gui = "gps_processing.ui.app:main"
+
+[tool.setuptools.packages.find]
+include = ["gps_processing*"]
