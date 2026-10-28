@@ -19,11 +19,14 @@ def read_sp3(path):
     return pd.DataFrame(rows, columns=['sat','x','y','z','time','timestamp'])
 
 def combine_sp3(before, day, after):
-    frames = [read_sp3(p) for p in (before, day, after)]
-    dates = [f.timestamp.min().normalize() for f in frames]
-    if (dates[1]-dates[0]).days != 1 or (dates[2]-dates[1]).days != 1:
+    """Previous/next day files are optional (empty): a single-day product such as a 5 min MGEX
+    orbit is then interpolated one-sided near midnight."""
+    frames = [read_sp3(p) if p and str(p) not in ('', '.') else None for p in (before, day, after)]
+    dates = [f.timestamp.min().normalize() if f is not None else None for f in frames]
+    if (frames[0] is not None and (dates[1]-dates[0]).days != 1) or (frames[2] is not None and (dates[2]-dates[1]).days != 1):
         raise ValueError('SP3 dosyaları sırasıyla önceki gün, ölçüm günü ve sonraki gün olmalı.')
     origin = dates[1]
+    frames = [f for f in frames if f is not None]
     combined = pd.concat(frames, ignore_index=True).sort_values(['sat','timestamp'])
     combined = combined.drop_duplicates(['sat','timestamp'])
     combined['epok'] = (combined.timestamp-origin).dt.total_seconds()

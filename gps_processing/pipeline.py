@@ -1,4 +1,5 @@
 from dataclasses import replace, asdict
+from functools import lru_cache
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -40,9 +41,33 @@ def prepare(config, progress):
     day = orbit.loc[orbit.epok == 0, 'timestamp']
     if day.empty or day.iloc[0].date() != obs.date.date():
         raise ValueError('RINEX gözlem günü ile ölçüm günü SP3 tarihi eşleşmiyor.')
+    clocks = None
+    if config.clock_file:
+        from gps_processing.io.clock_rinex import Clocks, read_clock_rinex
+        progress(35, 'Reading high-rate satellite clocks (RINEX CLK)')
+        clocks = Clocks(read_clock_rinex(config.clock_file, obs.date))
     progress(40, 'Satellite clocks, 9th-order Lagrange interpolation and relativity')
-    obs.combined, satellites = interpolate_satellites(orbit, obs.combined)
+    obs.combined, satellites = interpolate_satellites(orbit, obs.combined, clocks)
     return orbit, obs, satellites
+
+
+@lru_cache(maxsize=2)
+def load_antex(path, receiver):
+    from gps_processing.io.antex import read_antex
+    return read_antex(path, receiver=[receiver, receiver[:16].ljust(16)+'NONE'])
+
+
+def antenna_models(config, obs, satellites):
+    """Phase wind-up (EKF and AR; the sequential v2.0 baseline stays unchanged) and, with an
+    ANTEX file, satellite PCO plus receiver ARP/PCO/PCV. Applied per variant on copies."""
+    baseline = config.technique == 'PPP' and config.estimator == 'sequential'
+    if baseline or not (config.phase_windup or config.antex):
+        return obs, satellites, {}
+    from gps_processing.processing.antenna import apply_antenna_models
+    antennas = load_antex(str(config.antex), obs.antenna_type.ljust(20)[:20]) if config.antex else None
+    combined, satellites, info = apply_antenna_models(obs.combined, satellites, obs.approximate_xyz, obs.date,
+                                                      antennas, obs.antenna_type, obs.antenna_delta, config.phase_windup)
+    return replace(obs, combined=combined), satellites, info
 
 
 def learn_weights(config, obs, satellites, progress, atmosphere=None):
@@ -55,6 +80,7 @@ def learn_weights(config, obs, satellites, progress, atmosphere=None):
 
 def estimate(config, orbit, obs, satellites, progress=None):
     progress = progress or (lambda percent, message: None)
+    obs, satellites, models = antenna_models(config, obs, satellites)
     atmosphere = None
     if config.ionosphere or config.troposphere:
         from gps_processing.processing.atmosphere import Atmosphere
@@ -74,8 +100,17 @@ def estimate(config, orbit, obs, satellites, progress=None):
     else:
         from gps_processing.io.ar_products import ARProducts
         from gps_processing.processing.ar.solver import solve as solve_ar
-        products = ARProducts(config.ar_products, config.technique.split('/')[-1], obs.date)
-        if products.meta['orbit_product'] != Path(config.sp3_day).name:
+        method = config.technique.split('/')[-1]
+        if is_osb(config.ar_products):
+            from gps_processing.io.osb_products import OSBProducts
+            progress(58, 'Reading code and phase OSBs (Bias-SINEX)')
+            products = OSBProducts(config.ar_products, method, obs.date, config.clock_file)
+        elif str(config.ar_products).lower().endswith('.fcb'):
+            from gps_processing.io.fcb_products import FCBProducts
+            products = FCBProducts(config.ar_products, method, obs.date)
+        else:
+            products = ARProducts(config.ar_products, method, obs.date)
+        if products.meta['schema'] == 'togu-ar-1' and products.meta['orbit_product'] != Path(config.sp3_day).name:
             raise ValueError('AR ürününün orbit_product alanı ölçüm günü SP3 dosyasıyla eşleşmiyor.')
         if 'ml' in config.ar_validation:
             from gps_processing.processing.ml.ar_validation import ARValidator, default_validator
@@ -88,6 +123,8 @@ def estimate(config, orbit, obs, satellites, progress=None):
     result.residuals = residuals
     result.settings = settings(config)
     result.settings['clock_jumps'] = obs.clock_jumps
+    result.settings.update(models)
+    result.settings['orbit_clock_dropped_rows'] = int(obs.combined.attrs.get('orbit_clock_dropped', 0))
     if 'code_bias_aligned' in obs.combined:
         result.settings['code_bias_aligned_rows'] = int(obs.combined.code_bias_aligned.sum())
     if atmosphere is not None:
@@ -111,6 +148,12 @@ def reference_coordinate(config, result):
     if config.reference_xyz is not None:
         return np.asarray(config.reference_xyz, dtype=float), 'kullanıcı referansı'
     return result.positions.iloc[-1][['x', 'y', 'z']].to_numpy(dtype=float), 'son epok çözümü'
+
+
+def is_osb(path):
+    """Bias-SINEX (*.BIA, *.BSX, gz) AR products carry code and phase OSBs; others are JSON."""
+    import re
+    return bool(re.search(r'\.(BIA|BSX)(\.GZ)?$', str(path).upper()))
 
 
 def settings(config):
