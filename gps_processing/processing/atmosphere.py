@@ -1,6 +1,6 @@
 """Slant atmospheric delays shared by the float PPP and PPP-AR filters.
 
-Troposphere: Saastamoinen ZHD + Chao mapping by default. With a SINEX_TRO file the
+Troposphere: Saastamoinen ZHD + Niell mapping (Chao optional); the filter estimates the residual ZWD. With a SINEX_TRO file the
 station ZTD (linear in time) gives the a-priori wet delay ZWD0 = ZTD - ZHD and the
 north/east gradients are mapped with Chen & Herring (1997); the filter's ZWD state then
 estimates only the residual to ZWD0.
@@ -25,8 +25,9 @@ class SlantDelays:
 
 
 class Atmosphere:
-    def __init__(self, xyz, reference=None, marker='', troposphere_file='', ionosphere_file='', physical=True):
-        self.model = Troposphere(xyz)
+    def __init__(self, xyz, reference=None, marker='', troposphere_file='', ionosphere_file='', physical=True,
+                 mapping='niell'):
+        self.model = Troposphere(xyz, mapping=mapping, doy=reference.timetuple().tm_yday if reference else None)
         self.physical = physical
         self.tro = self.gim = None
         if troposphere_file:
@@ -41,7 +42,7 @@ class Atmosphere:
         from gps_processing.processing.estimation import FilterOptions
         return cls(observations.approximate_xyz, observations.date, getattr(observations, 'marker', ''),
                    getattr(config, 'troposphere', ''), getattr(config, 'ionosphere', ''),
-                   FilterOptions.from_config(config).physical_corrections)
+                   FilterOptions.from_config(config).physical_corrections, getattr(config, 'tropo_mapping', 'niell'))
 
     @property
     def initial_zwd(self):
@@ -95,6 +96,7 @@ class Atmosphere:
     def describe(self):
         tro = (f'SINEX_TRO {self.tro.site} ZTD + gradients (Chen & Herring)' if self.tro is not None
                else 'Saastamoinen ZHD' if self.physical else 'none')
+        tro += f', {self.model.mapping_name.capitalize()} mapping'
         iono = (f'IONEX single-layer {self.gim.height_km:g} km, second-order IF term (dipole field)'
                 if self.gim is not None else 'ionosphere-free combination only')
         return dict(troposphere_model=tro, ionosphere_model=iono)

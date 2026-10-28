@@ -106,6 +106,22 @@ class EKFTests(unittest.TestCase):
         self.assertAlmostEqual(dry[0], 1, places=2)
         self.assertTrue(5 < dry[1] < 6)
 
+    def test_niell_mapping(self):
+        from gps_processing.processing.troposphere import chao_mapping, niell_mapping
+        lat = np.radians(40.43)
+        dry, wet = niell_mapping(np.array([90., 5.]), lat, 0.0, 180)
+        np.testing.assert_allclose([dry[0], wet[0]], 1.0, atol=1e-12)
+        self.assertAlmostEqual(dry[1], 10.15, delta=0.06)              # textbook NMF values at 5 deg
+        self.assertAlmostEqual(wet[1], 10.75, delta=0.06)
+        # Agrees with Chao above 15 deg; annual term flips with the hemisphere; height raises the dry map.
+        np.testing.assert_allclose(niell_mapping(np.array([20., 45.]), lat, 0.0)[0], chao_mapping(np.array([20., 45.]))[0], rtol=2e-3)
+        self.assertAlmostEqual(niell_mapping(7., -lat, 0.0, 28)[0], niell_mapping(7., lat, 0.0, 28+182.625)[0], places=12)
+        self.assertNotAlmostEqual(niell_mapping(7., lat, 0.0, 28)[0], niell_mapping(7., lat, 0.0, 210)[0], places=4)
+        self.assertGreater(niell_mapping(7., lat, 2000.0)[0], niell_mapping(7., lat, 0.0)[0])
+        self.assertEqual(Troposphere(RECEIVER, mapping='chao').mapping(10.)[0], chao_mapping(10.)[0])
+        with self.assertRaises(ValueError):
+            Troposphere(RECEIVER, mapping='gmf')
+
 
 class AmbiguityTests(unittest.TestCase):
     def test_lambda_matches_brute_force(self):

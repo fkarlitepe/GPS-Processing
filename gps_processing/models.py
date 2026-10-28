@@ -46,6 +46,7 @@ class ProcessingConfig:
     position_noise: float = 10.0
     estimate_troposphere: bool = True
     troposphere_noise: float = 5.0
+    tropo_mapping: str = 'niell'      # Niell (1996) or Chao (1972); Saastamoinen ZHD + estimated ZWD
     physical_corrections: bool = True
     robust: bool = True
     code_sigma: float = 0.3
@@ -66,6 +67,9 @@ class ProcessingConfig:
             raise NotImplementedError('Desteklenen yöntemler: PPP, PPP-AR/SDBS, PPP-AR/DCM, PPP-AR/IPC.')
         if self.estimator not in ESTIMATORS:
             raise ValueError(f'Kestirici {", ".join(ESTIMATORS)} olmalı.')
+        from gps_processing.processing.troposphere import MAPPINGS
+        if self.tropo_mapping not in MAPPINGS:
+            raise ValueError(f'Eşleme fonksiyonu {"/".join(MAPPINGS)} olmalı.')
         if self.dynamics not in ('static', 'kinematic'):
             raise ValueError('Dinamik model static veya kinematic olmalı.')
         from gps_processing.processing.ar.integer import INTEGER_METHODS
