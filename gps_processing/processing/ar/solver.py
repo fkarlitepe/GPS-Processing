@@ -9,7 +9,7 @@ process noise, a zenith wet delay state, Saastamoinen/relativity corrections and
 from types import SimpleNamespace
 import numpy as np
 import pandas as pd
-from . import sdbs,dcm
+from . import sdbs,dcm,ipc
 from .models import LAMBDA_W,LAMBDA_N,BETA,combination_covariance
 from .integer import evaluate,condition_linear
 from gps_processing.processing.geometry import elevation
@@ -41,16 +41,27 @@ def fix_stage(state,cov,indices,settings,validator,stage):
     fixed,q=condition_linear(state,cov,indices,result['combinations'],result['integers'])
     return (fixed,q),result,''
 
+def redatum(kf,first,new):
+    """Re-reference all (N1, NW) pairs to satellite ``new``: x_j -= x_new, covariance propagated."""
+    t=np.eye(len(kf.x)); k=first+2*(new-1)
+    for j in range(first,len(kf.x),2):
+        t[j,k]-=1; t[j+1,k+1]-=1
+    kf.x=t@kf.x; kf.P=t@kf.P@t.T
+
 def solve(obs,satellites,approximate_xyz,config,variance_model=None,validator=None,atmosphere=None):
     options=FilterOptions.from_config(config); settings=ar_settings(config)
     if 'ml' in settings.validation and validator is None:
         from gps_processing.processing.ml.ar_validation import default_validator
         validator=default_validator()
     method=config.technique.split('/')[-1]
-    model=sdbs if method=='SDBS' else dcm
+    model={'SDBS':sdbs,'DCM':dcm,'IPC':ipc}[method]
+    rows_per_sat=2 if method=='IPC' else 3
+    clocks={'SDBS':[],'DCM':[3,4,5],'IPC':[3,4]}[method]
+    resolver=ipc.WideLaneResolver(config.ar_min_epochs) if method=='IPC' else None
+    wide_lane={}
     columns=['epok','sat','x','y','z']+(['relativity_m'] if options.physical_corrections and 'relativity_m' in satellites else [])
     data=obs.merge(satellites[columns],on=['epok','sat'],validate='one_to_one')
-    base=3 if method=='SDBS' else 6
+    base=3+len(clocks)
     tropo=base if options.estimate_troposphere else None
     first=base+(tropo is not None)
     dim=first+64
@@ -72,24 +83,38 @@ def solve(obs,satellites,approximate_xyz,config,variance_model=None,validator=No
         last_epoch=epoch
         ids=frame.sat.to_numpy(dtype=int)
         slipped=detector.check(epoch,frame)
-        if reference not in ids or reference in slipped:
-            reference=int(frame.loc[frame.elevation.idxmax(),'sat'])
-            # Conservative datum reset; no stale integers survive a reference change.
-            kf.reset(np.arange(first,dim),0.0,1e6)
-            age={}
         for sat in slipped:
             kf.reset([first+2*(sat-1),first+2*(sat-1)+1],0.0,1e6)
             age[sat]=0
+            wide_lane.pop(sat,None)
+            if resolver is not None: resolver.reset(sat)
+        if reference not in ids or reference in slipped:
+            new=int(frame.loc[frame.elevation.idxmax(),'sat'])
+            if reference is not None and age.get(new,0)>0 and new not in slipped:
+                # The datum change is an integer shift of all ambiguities (absorbed by the receiver
+                # clocks, Shi & Gao 2014): N_j <- N_j - N_new keeps converged and fixed arcs.
+                redatum(kf,first,new)
+                if new in wide_lane:
+                    shift=wide_lane[new]; wide_lane={s:v-shift for s,v in wide_lane.items() if s!=new}
+                elif wide_lane:
+                    # IPC: the new reference has no integer WL yet; re-resolve against it.
+                    for sat in wide_lane: kf.reset(first+2*(sat-1)+1,0.0,1e6)
+                    wide_lane={}
+            else:
+                kf.reset(np.arange(first,dim),0.0,1e6)
+                age={}; wide_lane={}
+            reference=new
         kf.reset([first+2*(reference-1),first+2*(reference-1)+1],0.0,0.0)
         for sat in ids: age[sat]=age.get(sat,0)+1
-        if method=='DCM':
-            kf.reset([3,4,5],0.0,1e10)
+        if clocks:
+            kf.reset(clocks,0.0,1e10)
         frame['arc_epochs']=[age[s] for s in ids]
         n=len(frame); noise=np.zeros((3*n,3*n))
         y=np.empty(3*n)
         sigmas=variance_model.sigmas(frame) if variance_model is not None else None
         for i,row in enumerate(frame.itertuples()):
             y[3*i:3*i+3]=[row.Pc+row.code_m,row.Lc+row.phase_m,row.A4+row.mw_m]
+            if resolver is not None: resolver.add(int(row.sat),y[3*i+2])
             if sigmas is None:
                 noise[3*i:3*i+3,3*i:3*i+3]=combination_covariance(max(.1,np.sin(np.radians(row.elevation))),options.code_sigma,options.phase_sigma)
             else:
@@ -101,7 +126,16 @@ def solve(obs,satellites,approximate_xyz,config,variance_model=None,validator=No
         if options.physical_corrections and 'relativity_m' in frame:
             common-=frame.relativity_m.to_numpy()
         ref_pos=int(np.flatnonzero(ids==reference)[0])
-        groups=np.repeat(np.arange(n),3) if method=='DCM' else np.repeat([i for i in range(n) if i!=ref_pos],3)
+        if resolver is not None:
+            # IPC wide lane: rounded with the satellite-averaged receiver bias, then held as known.
+            undifferenced=resolver.resolve(ids)
+            if reference in undifferenced:
+                for sat,value in undifferenced.items():
+                    if sat!=reference and sat not in wide_lane:
+                        wide_lane[sat]=value-undifferenced[reference]
+                        kf.reset(first+2*(sat-1)+1,float(wide_lane[sat]),1e-10)
+        groups={'SDBS':np.repeat([i for i in range(n) if i!=ref_pos],3),'DCM':np.repeat(np.arange(n),3),
+                'IPC':np.repeat(np.arange(n),2)}[method]
         def equations(current,inflation=np.ones(n)):
             delta=current[:3]-coords; ranges=np.linalg.norm(delta,axis=1)
             h=np.zeros((3*n,dim)); predicted=np.zeros(3*n)
@@ -114,9 +148,9 @@ def solve(obs,satellites,approximate_xyz,config,variance_model=None,validator=No
                 if tropo is not None:
                     h[3*i:3*i+2,tropo]=wet[i]
                     predicted[3*i:3*i+2]+=wet[i]*current[tropo]
-                if method=='DCM':
-                    h[3*i:3*i+3,3:6]=np.eye(3)
-                    predicted[3*i:3*i+3]+=current[3:6]
+                for row_offset,clock in enumerate(clocks):
+                    h[3*i+row_offset,clock]=1
+                    predicted[3*i+row_offset]+=current[clock]
             scaled=noise*np.repeat(inflation,3)[:,None]**.5*np.repeat(inflation,3)[None,:]**.5
             return (*model.transform(y,predicted,h,scaled,ref_pos),groups)
         prior=kf.x.copy()
@@ -125,7 +159,8 @@ def solve(obs,satellites,approximate_xyz,config,variance_model=None,validator=No
         correction=state-prior
         fixed=state.copy(); status='float'; reason='arc_or_precision_gate'
         wl=nl=None
-        candidates=[int(s) for s in ids if s!=reference and age[s]>=config.ar_min_epochs and age[reference]>=config.ar_min_epochs]
+        candidates=[int(s) for s in ids if s!=reference and age[s]>=config.ar_min_epochs and age[reference]>=config.ar_min_epochs
+                    and (resolver is None or s in wide_lane)]
         candidates.sort(key=lambda s:cov[first+2*(s-1),first+2*(s-1)])
         chosen=candidates[:4] if settings.method=='ils' else candidates
         w=[first+2*(s-1)+1 for s in chosen]; narrow=[i-1 for i in w]
@@ -152,9 +187,9 @@ def solve(obs,satellites,approximate_xyz,config,variance_model=None,validator=No
         sigma=np.sqrt(np.diag(cov)[:3])
         positions.append(dict(epok=epoch,x=fixed[0],y=fixed[1],z=fixed[2],
             float_x=state[0],float_y=state[1],float_z=state[2],sigma_x=sigma[0],sigma_y=sigma[1],sigma_z=sigma[2],
-            receiver_clock_s=state[3]/C if method=='DCM' else np.nan,
-            receiver_phase_clock_s=state[4]/C if method=='DCM' else np.nan,
-            receiver_mw_bias_m=state[5] if method=='DCM' else np.nan,
+            receiver_clock_s=state[3]/C if clocks else np.nan,
+            receiver_phase_clock_s=state[4]/C if clocks else np.nan,
+            receiver_mw_bias_m=state[5] if method=='DCM' else (resolver.receiver_bias*LAMBDA_W if resolver is not None else np.nan),
             zwd_m=delays.zwd_apriori+state[tropo] if tropo is not None else (delays.zwd_apriori if atmosphere.tro is not None else np.nan),
             stec_tecu=float(np.nanmean(delays.stec)) if np.isfinite(delays.stec).any() else np.nan,
             satellites=n,status=status,reference_sat=reference,residual_rms_m=rms,nis=report.nis,alpha=report.alpha,
@@ -172,6 +207,7 @@ def solve(obs,satellites,approximate_xyz,config,variance_model=None,validator=No
             wl_success_upper=info(wl,'success_upper'),n1_success_upper=info(nl,'success_upper'),wl_adop=info(wl,'adop'),n1_adop=info(nl,'adop'),
             wl_probability=wl.get('probability',np.nan) if wl else np.nan,n1_probability=nl.get('probability',np.nan) if nl else np.nan,
             candidate_pairs=len(chosen),fixed_pairs=nl['dimension'] if status!='float' else 0,
+            wl_known=len(wide_lane) if resolver is not None else np.nan,
             reset_satellites=','.join(map(str,slipped)),residual_rms_m=rms,nis=report.nis,downweighted=report.downweighted))
     if not positions: raise ValueError('PPP-AR için çözülebilir epok yok.')
     return pd.DataFrame(positions),pd.DataFrame(ambiguities),pd.DataFrame(diagnostics),kf.P,correction

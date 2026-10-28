@@ -1,4 +1,4 @@
-# PPP-AR: SDBS ve Decoupled Clock Model
+# PPP-AR: SDBS, Decoupled Clock Model ve Integer Phase Clock
 
 Bu sürüm GPS L1/L2 için iki **deneysel statik kullanıcı çözümü** içerir. Ağdan FCB kestirimi, üretim seviyesinde hassas PPP ve gerçek ürünlerle doğrulanmış santimetre doğruluğu iddia edilmez. Mevcut depo verileri yalnız float PPP denemesi için yeterlidir; AR ürünleri depoda yoktur.
 
@@ -86,6 +86,34 @@ python -m gps_processing \
 - Kabul edilen koordinat düzeltmesi çapraz kovaryansla uygulanır. Fixed sonuç float filtreye geri beslenmez; yanlış sabitlemenin sonraki epoklara taşınması önlenir.
 
 `xyz_result` float koordinatları, seçilen koordinatları ve `float/partial_fixed` durumunu içerir. `n3_amb` AR için N1/NW float/fixed alanlarını taşır; bunlar çevrimdir. `ar_diagnostics` WL/N1 ratio, referans, resetler ve reddetme nedenlerini içerir. `cll_result` ve `dx_1` **float** filtre durumuna aittir; AR boyutları SDBS için 67, DCM için 70'tir. DCM durum sırası XYZ, üç alıcı saat/biası (metre), GPS01…32 N1/NW (çevrim); SDBS'de üç saat durumu yoktur. SDBS alıcı saat çıktısı tanımsızdır.
+
+## Üç modelin karşılaştırması (Shi & Gao 2014)
+
+Shi & Gao (2014), *A comparison of three PPP integer ambiguity resolution methods* (GPS Solutions 18:519–528), SDBS, DCM ve integer phase clock (IPC) modellerini aynı gösterimle türetir. Kullanıcı çözümünde üçünün **eşdeğer** olduğunu gösterir: hepsi aynı IF kod/faz ve MW fonksiyonlarını kullanır, aynı WL ve N1 belirsizliklerini çözer, uydu başına üç düzeltme ister ve serbestlik derecesi n − 5'tir. Farkları yalnızca kesirli faz kısmını giderme yoludur.
+
+| | SDBS (`PPP-AR/SDBS`) | DCM (`PPP-AR/DCM`) | IPC (`PPP-AR/IPC`) |
+|---|---|---|---|
+| Uydu düzeltmeleri (`code_m`, `phase_m`, `mw_m`) | Kod saati, SD N1 FCB, SD WL FCB | Kod saati, faz saati, MW biası | Kod saati, faz saati, WSB (DCM ürünü de kabul edilir) |
+| Alıcı terimleri | Tek farkla yok olur | Kod, faz ve MW saati (3 durum) | Kod ve faz saati (2 durum); WRB uyduların ortalamasından |
+| WL çözümü | Filtrede SD MW (makale: zaman ortalaması + yuvarlama, denk. 27) | Filtrede, MW alıcı biası ile birlikte | Filtre dışında: arc ortalaması, dairesel ortalama WRB, yuvarlama (denk. 46–47) |
+| N1 çözümü | SD N1 filtrede | Farksız N1, referans uydu datumu | Farksız N1, WL bilinen kabul edilir (denk. 48) |
+| Satır / bilinmeyen (ZWD dahil) | 3(n−1) / 4 + 2(n−1) | 3n / 7 + 2(n−1) | 2n / 6 + (n−1) |
+| Serbestlik derecesi | n − 5 | n − 5 | n − 5 |
+
+Kontroller ve değişiklikler (`processing/ar/solver.py`, `processing/ar/ipc.py`):
+
+- **Fonksiyonel model makaleyle uyumlu:** `λ_N = c/(f1+f2) = 17 λ_IF` ve `β = c f2/(f1²−f2²) = 60 λ_IF`, yani `λ_IF N_IF = 17 λ_IF N1 + 60 λ_IF N_WL` (denk. 14). DCM'nin üç alıcı saati denk. 23–25 ile, SDBS'nin tek fark operatörü denk. 26–39 ile aynıdır.
+- **Düzeltilen sorun, referans uydu değişimi:** Eski sürüm referans değiştiğinde tüm belirsizlikleri sıfırlıyordu. Makaleye göre datum farkı bir tamsayı kaymasıdır ve alıcı saatleri tarafından emilir. Artık yeni referans izleniyorsa durum `N_j ← N_j − N_ref` ile dönüştürülür (kovaryans da). Yakınsamış ve fix'lenmiş belirsizlikler korunur. Sentetik testte eski sürüm değişimden sonra en az `ar_min_epochs` epok boyunca float kalıyordu, yeni sürüm fix'i koruyor.
+- **Yeni model, IPC:** WL, WSB ile düzeltilmiş MW'nin arc ortalamasından bulunur. Alıcı WL biası, kesirli kısımların dairesel ortalamasıdır (±0.5 civarında kesirlerin birbirini götürmemesi için). Arc yeterince uzun (`ar_min_epochs`), ortalamanın σ'sı 0.1 çevrimden küçük ve kalan kesir 0.25 çevrimden küçükse WL yuvarlanır ve referans uyduya göre sabit tutulur. N1 aşaması diğer modellerle aynı tamsayı kestiricilerini (LAMBDA, bootstrapping, cascade…) ve kabul testlerini kullanır.
+- **Eşdeğerlik testi** (`tests/test_ar_models.py`): Aynı sentetik veride üç model doğru WL ve N1 tamsayılarını buluyor; son konumlar birbirinden 1 cm, gerçek konumdan 2 cm içinde. IPC'nin kestirdiği alıcı WL biası gerçek değere eşit.
+- **Pratik farklar** (makalenin tartışma bölümü): SDBS'de alıcı saati tahmin edilmez. DCM WL'yi filtre içinde ve diğer bilinmeyenlerle birlikte kestirir. IPC'nin WL adımı basit ve hızlıdır, ama alıcı WL biasının her uydu için aynı olduğu varsayımına dayanır. Yanlış bir WL, IPC'de N1 aşamasına sabit olarak girer; bu yüzden WL kapıları tutucu tutulmuştur.
+
+## Kod biası ve alıcı saat sıçraması (Banville et al. 2008)
+
+Banville, Santerre, Cocard & Langley (2008) iki şeyi gösterir: (1) kod biasları hem MW geniş şeridine hem de IF uydu saatleri üzerinden IF belirsizliklerine girer (denk. 9–12), bu yüzden kullanıcının kodu ürünün üretildiği kodla aynı olmalıdır; (2) alıcı saat atlamasında bütün uyduların kesirli belirsizlikleri birlikte sıçrar. Yazılımda karşılıkları:
+
+- **Kod biası hizalaması** (`gps_processing/io/bias_sinex.py`, `--code-biases`): Bias-SINEX 1.00 dosyasındaki uydu DSB/OSB değerleri okunur (ters yönlü DSB ve OSB çiftleri de kullanılır, alıcı satırları atlanır). C1W/C2W dışındaki kodlar (C1C, C1X, C2L, C2X…) `C − DSB(C, CW)` ile W eşdeğerine çevrilir; Pc, A4 ve yayım zamanı kodu doğrusal olduğu için doğrudan düzeltilir. Faz değiştirilmez: IGS kuralında bir frekansın uydu faz biası izleme modundan bağımsızdır, alıcı tarafındaki farklar tüm uydular için ortaktır. AR ürün kontrolü hizalanmış satırlarda kodun tam, fazın yalnız frekans olarak eşleşmesini ister. DSB'si olmayan satırlar hizalanmaz ve AR ürün kontrolünde reddedilir.
+- **Saat sıçraması onarımı** (`gps_processing/processing/clock_jump.py`, varsayılan açık, `--no-clock-jump-repair`): Ardışık epoklarda kesintisiz uydular için Δ(Pc − Lc) hesaplanır. Medyan 1 ms'nin tam katına yuvarlanır; uyduların en az %80'i bu değere 30 m içinde uyuyorsa sıçrama kabul edilir ve tam `k·c·1 ms` değeri o epoktan sonra Lc ve A4'e eklenir. Kod ve zaman etiketi değişmez, GF etkilenmez. Bulunan sıçramalar `summary.json` → `settings.clock_jumps` alanına yazılır. Sentetik testte onarımsız DCM çözümü sıçramada bütün arc'ları yeniden başlatıp `ar_min_epochs − 1` epok float kalıyor; onarımlı çözüm fix'i koruyor.
 
 ## Mevcut sınırlar ve sonraki bilimsel adımlar
 
