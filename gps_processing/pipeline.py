@@ -30,6 +30,13 @@ def prepare(config, progress):
     orbit = combine_sp3(config.sp3_before, config.sp3_day, config.sp3_after)
     progress(20, 'RINEX and signal combinations')
     obs = read_rinex(config.rinex)
+    if config.repair_clock_jumps:
+        from gps_processing.processing.clock_jump import repair_clock_jumps
+        obs.combined, obs.clock_jumps = repair_clock_jumps(obs.combined)
+    if config.code_biases:
+        from gps_processing.io.bias_sinex import CodeBiases, align_code_biases, read_bias_sinex
+        progress(30, 'Aligning code biases to C1W/C2W (Bias-SINEX)')
+        obs.combined = align_code_biases(obs.combined, CodeBiases(read_bias_sinex(config.code_biases, obs.date)))
     day = orbit.loc[orbit.epok == 0, 'timestamp']
     if day.empty or day.iloc[0].date() != obs.date.date():
         raise ValueError('RINEX gözlem günü ile ölçüm günü SP3 tarihi eşleşmiyor.')
@@ -80,6 +87,9 @@ def estimate(config, orbit, obs, satellites, progress=None):
     result = ProcessingResult(positions, ambiguities, diagnostics, covariance, obs, satellites, orbit, corrections, config.technique)
     result.residuals = residuals
     result.settings = settings(config)
+    result.settings['clock_jumps'] = obs.clock_jumps
+    if 'code_bias_aligned' in obs.combined:
+        result.settings['code_bias_aligned_rows'] = int(obs.combined.code_bias_aligned.sum())
     if atmosphere is not None:
         result.settings.update(atmosphere.describe())
     if products is not None:
