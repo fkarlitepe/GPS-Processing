@@ -26,6 +26,7 @@ TECHNIQUES = {
     'PPP': 'Float PPP: ionosphere-free code + phase; ambiguities stay real-valued. No extra product needed (SP3 + RINEX).',
     'PPP-AR/SDBS': 'Between-satellite single differences (Collins 2008 / Shi 2012 §4.1), WL → N1 fixing. Requires consistent code clocks and satellite WL/N1 bias products.',
     'PPP-AR/DCM': 'Decoupled clock model (Collins 2008, Shi 2012 ch. 3): separate receiver clocks for code, phase and MW. Requires a product with three satellite corrections and a reference-satellite datum.',
+    'PPP-AR/IPC': 'Integer phase clock model (Laurichesse et al. 2008): wide lane from the WSB-corrected MW with a satellite-averaged receiver bias, then N1 estimated directly with receiver code and phase clocks. Uses the same three corrections as DCM (code clock, phase clock, WSB).',
 }
 PLOTS = {
     'ENU error (m)': (['east', 'north', 'up'], ['East', 'North', 'Up'], False),
@@ -53,6 +54,7 @@ def unknowns(technique, ekf, tropo, external_tropo=False):
         'PPP': f'receiver X, Y, Z · receiver clock offset{zwd} · one float ionosphere-free phase ambiguity per satellite',
         'PPP-AR/SDBS': f'receiver X, Y, Z{zwd} · between-satellite single-differenced WL and N1 ambiguities (receiver clock cancels)',
         'PPP-AR/DCM': f'receiver X, Y, Z · code, phase and MW receiver clocks{zwd} · WL and N1 ambiguities',
+        'PPP-AR/IPC': f'receiver X, Y, Z · receiver code and phase clocks{zwd} · N1 ambiguities (WL rounded beforehand with the averaged receiver WL bias)',
     }[technique]
     how = 'prediction + measurement update at every epoch (EKF)' if ekf else 'sequential least squares over the epochs'
     return (f'Estimated unknowns: {states}.\nMethod: {how}. SP3 (satellite positions and clocks), AR and atmosphere products '
@@ -60,12 +62,14 @@ def unknowns(technique, ekf, tropo, external_tropo=False):
 
 
 def product_kind(name):
-    """'ionosphere' for IONEX (*.INX, legacy *.yyI), 'troposphere' for SINEX_TRO (*.TRO, *.zpd); gz/Z allowed."""
+    """'ionosphere' for IONEX (*.INX, legacy *.yyI), 'troposphere' for SINEX_TRO (*.TRO, *.zpd), 'code_biases' for Bias-SINEX (*.BSX, *.BIA); gz allowed."""
     name = re.sub(r'\.(GZ|Z)$', '', name.upper())
     if name.endswith('.INX') or re.search(r'\.\d\dI$', name):
         return 'ionosphere'
     if name.endswith('.TRO') or name.endswith('ZPD'):
         return 'troposphere'
+    if name.endswith('.BSX') or name.endswith('.BIA'):
+        return 'code_biases'
     return None
 
 
@@ -109,8 +113,8 @@ class Application(tk.Tk):
         self.build_settings(settings)
         self.build_output(output)
         self.build_comparison(comparison)
-        ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGPS Precise Point Positioning — v2.4\n\n'
-                  'Float PPP and PPP-AR (SDBS — Collins, DCM — Shi/Collins) user models; iterated extended Kalman filter\n'
+        ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGPS Precise Point Positioning — v2.5\n\n'
+                  'Float PPP and PPP-AR user models (SDBS — Ge et al., DCM — Collins, integer phase clock — Laurichesse);\niterated extended Kalman filter '
                   '(process noise, ZWD estimation, IGG-III robust update, adaptive fading), LAMBDA decorrelation and partial AR,\n'
                   'a stochastic model learned from residuals (gradient-boosted trees) and an AR validator trained by Monte Carlo.\n'
                   'External products: IONEX global ionosphere maps (single-layer model, second-order IF term) and\n'
@@ -146,7 +150,7 @@ class Application(tk.Tk):
             self.fields[key] = field
         self.fields['output'].value.set(str(Path('results').resolve()))
         ttk.Button(inputs,text='Select files from the Data folder',command=self.load_example).pack(anchor='w',pady=16)
-        ttk.Label(inputs,text='Fill the Data folder with the required files before processing.\nPPP: 3 consecutive daily SP3 files + 1 RINEX 3 observation file.\nPPP-AR: additionally a clock/bias JSON product for the chosen method.\nOptional: IONEX (*.INX) and SINEX_TRO (*.TRO) atmosphere products — see Processing settings.').pack(anchor='w')
+        ttk.Label(inputs,text='Fill the Data folder with the required files before processing.\nPPP: 3 consecutive daily SP3 files + 1 RINEX 3 observation file.\nPPP-AR: additionally a clock/bias JSON product for the chosen method (IPC also accepts a DCM product).\nOptional: IONEX (*.INX) and SINEX_TRO (*.TRO) atmosphere products — see Processing settings.').pack(anchor='w')
 
     def row(self, rows, widget, **pack):
         """Register a widget for ordered show/hide; ``arrange`` re-packs the visible ones."""
@@ -181,6 +185,13 @@ class Application(tk.Tk):
         self.row(self.rows[method], ttk.Label(method, textvariable=self.technique_info, wraplength=950, foreground=MUTED), anchor='w', pady=(6,2))
         self.fields['ar_products'] = self.ar_field = self.row(self.rows[method], FileField(method, 'AR clock/bias product (JSON)'), fill='x', pady=6)
         self.mask = self.row(self.rows[method], LabeledValue(method, 'Elevation mask (deg)', 'float', 10, step=1), fill='x', pady=4)
+        self.fields['code_biases'] = self.row(self.rows[method], FileField(method, 'Code biases (Bias-SINEX)'), fill='x', pady=(6,2))
+        self.row(self.rows[method], ttk.Label(method, wraplength=950, foreground=MUTED, justify='left', text=
+                 'Optional DSB/OSB file (*.BSX, *.BIA, gz allowed). Codes other than C1W/C2W (e.g. C1C, C2L) are shifted to their '
+                 'C1W/C2W equivalent before IF and MW are formed, so they agree with IGS clocks and AR products '
+                 '(Banville et al. 2008, eq. 12).'), anchor='w', pady=(0,4))
+        self.clock_jumps = self.row(self.rows[method], LabeledValue(method, 'Repair receiver clock jumps', 'bool', True,
+                                    hint='1 ms jumps common to all satellites are removed from the phase instead of resetting every arc'))
 
         ekf = section('Estimation — solving for the unknowns')
         rows = self.rows[ekf]
@@ -383,7 +394,7 @@ class Application(tk.Tk):
             for key,path in zip(('sp3_before','sp3_day','sp3_after','rinex'),[*orbits,observations[0]]):
                 self.fields[key].value.set(str(require_data_file(path)))
             # Optional atmosphere products are picked up only when unambiguous.
-            for key in ('ionosphere', 'troposphere'):
+            for key in ('ionosphere', 'troposphere', 'code_biases'):
                 found = [p for p in files if product_kind(p.name) == key]
                 if len(found) == 1:
                     self.fields[key].value.set(str(require_data_file(found[0])))
@@ -415,7 +426,7 @@ class Application(tk.Tk):
             physical_corrections=self.physical.get(), robust=self.robust.get(), code_sigma=self.code_sigma.get(),
             phase_sigma=self.phase_sigma.get(), integer_method=INTEGER[self.integer_method.get()],
             ar_success_rate=self.success_rate.get(), ar_validation=VALIDATION[self.validation.get()],
-            ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),
+            repair_clock_jumps=self.clock_jumps.get(), ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),
             ml_weighting=self.ml_weighting.get(), ml_threshold=self.ml_threshold.get(),
             reference_xyz=tuple(float(v) for v in reference) if reference else None)
         config.validate()

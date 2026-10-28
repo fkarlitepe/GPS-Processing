@@ -4,6 +4,10 @@ GPS Precise Point Positioning (PPP) araştırma projesi.
 
 **v2.1:** Kestirim noktalarına iterasyonlu **genişletilmiş Kalman filtresi** (statik/kinematik, ZWD kestirimi, IGG-III robust ve adaptif güncelleme), **LAMBDA + kısmi AR** ve iki **makine öğrenmesi** bileşeni (artıklardan öğrenilen gözlem varyansı, Monte Carlo ile eğitilmiş AR doğrulayıcı) eklendi; arayüze yöntem ayarları, grafikler ve **yöntem karşılaştırması** sekmesi geldi. Denklemler, örnek sonuçlar ve deney tasarımı: [EKF ve ML belgesi](docs/EKF_ML.md).
 
+**v2.5:** Integer phase clock (IPC, Laurichesse) kullanıcı modeli eklendi (`--technique PPP-AR/IPC`). SDBS/DCM, Shi & Gao (2014) karşılaştırmasına göre gözden geçirildi; referans uydu değişiminde belirsizlikler artık sıfırlanmıyor, tamsayı kaydırmayla korunuyor. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
+
+Ayrıca (Banville et al. 2008): Bias-SINEX DSB/OSB dosyasıyla C1C/C2L gibi kodlar C1W/C2W'ye hizalanır (`--code-biases`), alıcı milisaniye saat sıçramaları algılanıp fazdan giderilir (varsayılan açık, `--no-clock-jump-repair`).
+
 **v2.4:** LAMBDA'ya alternatif tamsayı kestiricileri eklendi: dekorelasyonlu integer bootstrapping (+PAR) ve TCAR/CIR ilkesine göre kademeli yuvarlama (`--integer-method bootstrap|cascade`). Başarı oranları Ps-LAMBDA formülleriyle raporlanıyor; AR için ML doğrulayıcı scikit-learn ile seçildi. Ayrıntılar: [EKF ve ML belgesi](docs/EKF_ML.md).
 
 **v2.2:** IONEX küresel iyonosfer haritası (tek tabaka modeli, IF kombinasyonunda ikinci derece terim) ve SINEX_TRO istasyon ZTD ürünü (a-priori ZTD + Chen & Herring gradyanları) hesaba katılır (`--ionosphere`, `--troposphere`). Arayüz başlıkları ve açıklamaları İngilizcedir. Ayrıntılar: [Atmosphere products](docs/ATMOSPHERE.md).
@@ -46,6 +50,8 @@ Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü a
 | Veri sözleşmeleri | `gps_processing/models.py` | Girdiler, doğrulama, gözlemler ve sonuçlar |
 | SP3 | `gps_processing/io/sp3.py` | GPS yörünge/saat okuma; gerçek tarihlerle gün birleştirme |
 | RINEX 3 | `gps_processing/io/rinex.py` | Başlığa göre gözlem alanları; L1/L2/L5 fazlarının metreye dönüşümü |
+| Kod biasları | `gps_processing/io/bias_sinex.py` | Bias-SINEX DSB/OSB okuma; C1C/C2L… kodlarını C1W/C2W'ye hizalama |
+| Saat sıçraması | `gps_processing/processing/clock_jump.py` | 1 ms alıcı saat sıçramalarının algılanması ve fazdan giderilmesi |
 | Kombinasyonlar | `gps_processing/processing/combinations.py` | Ionosphere-free ve Melbourne–Wübbena |
 | Yörünge | `gps_processing/processing/orbit.py` | Yayım zamanı, 10 noktalı 9. derece Lagrange, saat enterpolasyonu, Dünya dönüşü |
 | Geometri | `gps_processing/processing/geometry.py` | Yükseklik açısı, öncül kovaryans |

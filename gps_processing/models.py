@@ -12,6 +12,7 @@ class Observations:
     combined: pd.DataFrame
     date: object
     marker: str = ''
+    clock_jumps: list = field(default_factory=list)
 
 @dataclass
 class ProcessingConfig:
@@ -24,6 +25,8 @@ class ProcessingConfig:
     technique: str = 'PPP'
     ionosphere: str = ''
     troposphere: str = ''
+    code_biases: str = ''
+    repair_clock_jumps: bool = True
     fcb_files: list = field(default_factory=list)
 
     ar_products: str = ''
@@ -54,8 +57,8 @@ class ProcessingConfig:
     reference_xyz: tuple = None
 
     def validate(self):
-        if self.technique not in ('PPP', 'PPP-AR/SDBS', 'PPP-AR/DCM'):
-            raise NotImplementedError('Desteklenen yöntemler: PPP, PPP-AR/SDBS, PPP-AR/DCM.')
+        if self.technique not in ('PPP', 'PPP-AR/SDBS', 'PPP-AR/DCM', 'PPP-AR/IPC'):
+            raise NotImplementedError('Desteklenen yöntemler: PPP, PPP-AR/SDBS, PPP-AR/DCM, PPP-AR/IPC.')
         if self.estimator not in ESTIMATORS:
             raise ValueError(f'Kestirici {", ".join(ESTIMATORS)} olmalı.')
         if self.dynamics not in ('static', 'kinematic'):
@@ -80,7 +83,7 @@ class ProcessingConfig:
             raise ValueError('AR ratio > 1, standart sapma > 0 ve minimum epok >= 2 olmalı.')
         if self.technique != 'PPP' and (not self.ar_products or not Path(self.ar_products).is_file()):
             raise ValueError('PPP-AR için yönteme uyumlu normalize saat/bias JSON ürünü gerekli.')
-        for extra in [self.ar_products, self.ionosphere, self.troposphere, *self.fcb_files]:
+        for extra in [self.ar_products, self.ionosphere, self.troposphere, self.code_biases, *self.fcb_files]:
             if extra:
                 require_data_file(extra)
         if self.fcb_files:
