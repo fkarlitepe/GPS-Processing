@@ -5,3 +5,4 @@ results/
 *.egg-info/
 Literatür/
 Data/models/
+Data/fcb/
