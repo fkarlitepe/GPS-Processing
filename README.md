@@ -63,7 +63,7 @@ Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü a
 | Konum çözümü (v2.0 temel) | `gps_processing/processing/ppp.py` | Sıralı ağırlıklı kod/faz kestirimi; alıcı saati ve uydu belirsizlikleri |
 | EKF çekirdeği | `gps_processing/processing/estimation/` | İterasyonlu EKF, süreç gürültüsü, IGG-III robust, adaptif fading |
 | EKF float PPP | `gps_processing/processing/ppp_ekf.py` | XYZ, saat, ZWD, IF belirsizlikleri; artık tablosu |
-| Fiziksel modeller | `processing/troposphere.py`, `processing/cycle_slip.py` | Saastamoinen + Chao eşleme; LLI/boşluk/MW/GF kayma tespiti |
+| Fiziksel modeller | `processing/troposphere.py`, `processing/cycle_slip.py` | Saastamoinen + Niell (varsayılan) veya Chao eşleme; LLI/boşluk/MW/GF kayma tespiti |
 | PPP-AR | `gps_processing/processing/ar/` | SDBS/DCM filtresi, ILS, LAMBDA dekorelasyonu, bootstrapping PAR |
 | Makine öğrenmesi | `gps_processing/processing/ml/` | GBRT stokastik model, lojistik AR doğrulayıcı (numpy) |
 | Analiz | `gps_processing/analysis.py` | ENU hataları, yakınsama süresi, yöntem istatistikleri |

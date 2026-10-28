@@ -210,7 +210,9 @@ class Application(tk.Tk):
         self.position_noise = self.row(rows, LabeledValue(ekf, 'Kinematic position noise', 'float', 10.0, step=0.5, hint='m/√s random walk'))
         self.estimate_troposphere = self.row(rows, LabeledValue(ekf, 'Estimate zenith wet delay (ZWD)', 'bool', True))
         self.troposphere_noise = self.row(rows, LabeledValue(ekf, 'ZWD process noise', 'float', 5.0, step=1, hint='mm/√h random walk'))
-        self.physical = self.row(rows, LabeledValue(ekf, 'Physical corrections', 'bool', True, hint='Saastamoinen ZHD + Chao mapping + periodic relativity'))
+        self.physical = self.row(rows, LabeledValue(ekf, 'Physical corrections', 'bool', True, hint='Saastamoinen ZHD + mapping function + periodic relativity'))
+        self.mapping = self.row(rows, LabeledValue(ekf, 'Troposphere mapping', 'choice', 'niell', ['niell', 'chao'],
+                                                   hint='Niell (1996): latitude, height, day of year · Chao (1972): elevation only'))
         self.windup = self.row(rows, LabeledValue(ekf, 'Phase wind-up', 'bool', True, hint='nominal-yaw wind-up on the IF phase; required by OSB/FCB AR products'))
         self.robust = self.row(rows, LabeledValue(ekf, 'Robust update (IGG-III)', 'bool', True, hint='down-weights outlying observations'))
         self.code_sigma = self.row(rows, LabeledValue(ekf, 'Raw code σ (zenith)', 'float', 0.3, step=0.1, hint='m'))
@@ -233,7 +235,7 @@ class Application(tk.Tk):
         self.fields['troposphere'] = self.row(rows, FileField(atmosphere, 'Zenith delay (SINEX_TRO)'), fill='x', pady=(0,2))
         self.row(rows, ttk.Label(atmosphere, wraplength=950, foreground=MUTED, justify='left', text=
                  'IGS station troposphere product (*.TRO, *.TRO.gz, *.zpd) for the RINEX marker or the nearest station within 20 km. '
-                 'ZTD is interpolated linearly in time; a-priori ZWD = ZTD − Saastamoinen ZHD with the Chao wet mapping, '
+                 'ZTD is interpolated linearly in time; a-priori ZWD = ZTD − Saastamoinen ZHD with the selected wet mapping, '
                  'gradients with Chen & Herring (1997). If ZWD estimation is on, the filter estimates only the residual to the '
                  'product; otherwise the product delay is applied as fixed.'), anchor='w')
         for key in ('ionosphere', 'troposphere'):
@@ -349,7 +351,7 @@ class Application(tk.Tk):
         if not ar:
             hidden |= {self.ar_field, self.ar_section, self.fcb_section}
         if not ekf:
-            hidden |= {self.dynamics, self.estimate_troposphere, self.physical, self.windup, self.robust, self.ml_section}
+            hidden |= {self.dynamics, self.estimate_troposphere, self.physical, self.mapping, self.windup, self.robust, self.ml_section}
             if not ar:
                 # v2.0 LS uses its own fixed weights and no atmosphere models.
                 hidden |= {self.code_sigma, self.phase_sigma, self.atmosphere_section}
@@ -452,7 +454,7 @@ class Application(tk.Tk):
             physical_corrections=self.physical.get(), robust=self.robust.get(), code_sigma=self.code_sigma.get(),
             phase_sigma=self.phase_sigma.get(), integer_method=INTEGER[self.integer_method.get()],
             ar_success_rate=self.success_rate.get(), ar_validation=VALIDATION[self.validation.get()],
-            repair_clock_jumps=self.clock_jumps.get(), phase_windup=self.windup.get(), ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),
+            tropo_mapping=self.mapping.get(), repair_clock_jumps=self.clock_jumps.get(), phase_windup=self.windup.get(), ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),
             ml_weighting=self.ml_weighting.get(), ml_threshold=self.ml_threshold.get(),
             reference_xyz=tuple(float(v) for v in reference) if reference else None)
         config.validate()

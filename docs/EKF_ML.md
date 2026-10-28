@@ -7,7 +7,7 @@ Bu belge v2.1'de eklenen kestirim katmanını açıklar: iterasyonlu genişletil
 | Kestirim noktası | v2.0 | v2.1 | Modül |
 |---|---|---|---|
 | Konum/saat/belirsizlik durumu | Süreç gürültüsüz sıralı ağırlıklı LS | İterasyonlu EKF: süreç gürültüsü, statik/kinematik, Joseph formu | `processing/estimation/ekf.py`, `ppp_ekf.py`, `ar/solver.py` |
-| Troposfer | Yok | Saastamoinen ZHD + Chao eşleme, ZWD rastgele yürüyüş durumu | `processing/troposphere.py` |
+| Troposfer | Yok | Saastamoinen ZHD + Niell (veya Chao) eşleme, kalan ZWD rastgele yürüyüş durumu | `processing/troposphere.py` |
 | Uydu saati | SP3 | SP3 + periyodik relativistik terim −2 r·v / c | `processing/orbit.py` |
 | Aykırı gözlem | Yok | IGG-III eşdeğer ağırlık (sonsal standart artık) | `ekf.py: igg3` |
 | Model uyumsuzluğu | Yok | İnovasyon tabanlı adaptif fading (yalnız konum) | `ekf.py: update(adaptive=…)` |
