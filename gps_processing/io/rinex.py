@@ -11,10 +11,12 @@ def read_rinex(path):
     lines = Path(path).read_text(encoding='ascii', errors='replace').splitlines()
     if not lines or not lines[0].lstrip().startswith('3.'):
         raise ValueError('Yalnız RINEX 3 gözlem dosyaları destekleniyor.')
-    types, xyz, system, end = {}, None, None, None
+    types, xyz, system, end, marker = {}, None, None, None, ''
     for i, line in enumerate(lines):
         label = line[60:].strip()
-        if label == 'APPROX POSITION XYZ':
+        if label == 'MARKER NAME':
+            marker = line[:60].strip()
+        elif label == 'APPROX POSITION XYZ':
             xyz = np.array([float(v) for v in line[:60].split()])
         elif label == 'SYS / # / OBS TYPES':
             if line[0] != ' ':
@@ -72,20 +74,31 @@ def read_rinex(path):
     def pair(band):
         codes = [f'c{band}{s}' for s in ('w', 'c', 'x', 'p', 's', 'l')]
         p, l = pd.Series(np.nan, index=raw.index), pd.Series(np.nan, index=raw.index)
+        snr = pd.Series(np.nan, index=raw.index)
+        selected = pd.Series('', index=raw.index)
         for name in codes:
             phase = 'l' + name[1:]
             if name in raw and phase in raw:
                 valid = p.isna() & raw[name].gt(0) & raw[phase].notna() & raw[phase].ne(0)
                 p.loc[valid], l.loc[valid] = raw.loc[valid, name], raw.loc[valid, phase]
-        return p, l
-    p1, l1 = pair('1')
-    p2, l2 = pair('2')
+                if 's' + name[1:] in raw:
+                    snr.loc[valid] = raw.loc[valid, 's' + name[1:]]
+                selected.loc[valid] = name.upper() + ' ' + phase.upper()
+        return p, l, selected, snr
+    p1, l1, signal1, snr1 = pair('1')
+    p2, l2, signal2, snr2 = pair('2')
     combined = raw[['sat', 'epok', 'epoch_reset']].copy()
+    combined['signals'] = signal1 + ' ' + signal2
     combined['Pc'] = ionosphere_free(p1, p2)
     combined['Lc'] = ionosphere_free(l1, l2)
     combined['A4'] = melbourne_wubbena(p1, p2, l1, l2)
     combined['travel_code'] = p1
+    # Geometry-free phase (metres) for cycle-slip checks; SNR (dB-Hz) is an ML feature.
+    combined['GF'] = l1 - l2
+    combined['snr1'], combined['snr2'] = snr1, snr2
+    prior_signals = combined.groupby('sat')['signals'].shift()
+    combined['epoch_reset'] |= prior_signals.notna() & combined['signals'].ne(prior_signals)
     combined = combined.replace([np.inf, -np.inf], np.nan).dropna(subset=['Pc', 'Lc', 'A4'])
     if combined.empty:
         raise ValueError('Geçerli çift frekanslı GPS kod/faz çifti bulunamadı.')
-    return Observations(xyz, raw, combined.reset_index(drop=True), first_date)
+    return Observations(xyz, raw, combined.reset_index(drop=True), first_date, marker)

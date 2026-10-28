@@ -31,13 +31,17 @@ def interpolate_satellites(orbit, observations):
         clock = np.interp(obs.epok, t, frame.time.to_numpy())
         travel = obs.travel_code/C
         emission = obs.epok-travel-clock*1e-6
-        xyz = interpolate(t, frame[['x','y','z']].to_numpy(), emission)*1000
+        nodes = frame[['x','y','z']].to_numpy()
+        xyz = interpolate(t, nodes, emission)*1000
+        # Central difference velocity (m/s) for the periodic relativistic clock term.
+        velocity = (interpolate(t, nodes, min(emission+.5, t[-1]))-interpolate(t, nodes, max(emission-.5, t[0])))*1000
+        relativity = -2*xyz@velocity/C
         angle = OMEGA_E*travel
         rotation = np.array([[np.cos(angle),np.sin(angle),0],[-np.sin(angle),np.cos(angle),0],[0,0,1]])
         xyz = rotation @ xyz
         clock = np.interp(emission, t, frame.time.to_numpy())
-        rows.append((obs.epok, obs.sat, emission, *xyz, clock))
-    satellites = pd.DataFrame(rows, columns=['epok','sat','t_ems','x','y','z','dt_sat'])
+        rows.append((obs.epok, obs.sat, emission, *xyz, clock, relativity))
+    satellites = pd.DataFrame(rows, columns=['epok','sat','t_ems','x','y','z','dt_sat','relativity_m'])
     result = observations.merge(satellites[['epok','sat','t_ems','dt_sat']], on=['epok','sat'], validate='one_to_one')
     result.attrs.update(observations.attrs)
     return result, satellites
