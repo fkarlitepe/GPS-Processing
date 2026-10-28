@@ -1,6 +1,15 @@
 # TOGU GPS Processing
 
-GPS Precise Point Positioning (PPP) araştırma projesi. Kod/faz gözlemlerinden deneysel **float PPP** çözümü üretir. Masaüstü arayüzü ve komut satırı aynı işlem servisini kullanır.
+GPS Precise Point Positioning (PPP) araştırma projesi.
+
+**v2.1:** Kestirim noktalarına iterasyonlu **genişletilmiş Kalman filtresi** (statik/kinematik, ZWD kestirimi, IGG-III robust ve adaptif güncelleme), **LAMBDA + kısmi AR** ve iki **makine öğrenmesi** bileşeni (artıklardan öğrenilen gözlem varyansı, Monte Carlo ile eğitilmiş AR doğrulayıcı) eklendi; arayüze yöntem ayarları, grafikler ve **yöntem karşılaştırması** sekmesi geldi. Denklemler, örnek sonuçlar ve deney tasarımı: [EKF ve ML belgesi](docs/EKF_ML.md).
+
+**v2.4:** LAMBDA'ya alternatif tamsayı kestiricileri eklendi: dekorelasyonlu integer bootstrapping (+PAR) ve TCAR/CIR ilkesine göre kademeli yuvarlama (`--integer-method bootstrap|cascade`). Başarı oranları Ps-LAMBDA formülleriyle raporlanıyor; AR için ML doğrulayıcı scikit-learn ile seçildi. Ayrıntılar: [EKF ve ML belgesi](docs/EKF_ML.md).
+
+**v2.2:** IONEX küresel iyonosfer haritası (tek tabaka modeli, IF kombinasyonunda ikinci derece terim) ve SINEX_TRO istasyon ZTD ürünü (a-priori ZTD + Chen & Herring gradyanları) hesaba katılır (`--ionosphere`, `--troposphere`). Arayüz başlıkları ve açıklamaları İngilizcedir. Ayrıntılar: [Atmosphere products](docs/ATMOSPHERE.md).
+
+PPP-AR/SDBS ve PPP-AR/DCM için ayrı deneysel kullanıcı modelleri vardır. Ürün sözleşmesi, literatür karşılaştırması, denklemler ve bilimsel sınırlar için [PPP-AR teknik belgesi](docs/PPP_AR.md). AR için normalize saat/bias JSON ürünü gerekir; depoda bu ürün yoktur.
+ Kod/faz gözlemlerinden deneysel **float PPP** çözümü üretir. Masaüstü arayüzü ve komut satırı aynı işlem servisini kullanır.
 
 ## Kurulum ve çalıştırma
 
@@ -13,7 +22,7 @@ pip install -r requirements.txt
 python -m gps_processing --gui
 ```
 
-Linux'ta masaüstü arayüzü için Tk desteği (`python3-tk`) ve bir grafik oturumu gerekir. Arayüzde **Projedeki örnek verileri yükle** düğmesi depodaki dosyaları seçer. Veri dosyaları, işlem ayarları, sonuçlar ve proje bilgileri ayrı sekmelerdedir. İşlem arka planda yürütülür; ilerleme, hatalar ve epok sonuçları gösterilir.
+Linux'ta masaüstü arayüzü için Tk desteği (`python3-tk`) ve bir grafik oturumu gerekir. Arayüzde **Data klasöründeki verileri seç** düğmesi Data içindeki dosyaları seçer. Veri dosyaları, işlem ayarları, sonuçlar ve proje bilgileri ayrı sekmelerdedir. İşlem arka planda yürütülür; ilerleme, hatalar ve epok sonuçları gösterilir.
 
 Komut satırından örnek veri:
 
@@ -40,11 +49,28 @@ Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü a
 | Kombinasyonlar | `gps_processing/processing/combinations.py` | Ionosphere-free ve Melbourne–Wübbena |
 | Yörünge | `gps_processing/processing/orbit.py` | Yayım zamanı, 10 noktalı 9. derece Lagrange, saat enterpolasyonu, Dünya dönüşü |
 | Geometri | `gps_processing/processing/geometry.py` | Yükseklik açısı, öncül kovaryans |
-| Konum çözümü | `gps_processing/processing/ppp.py` | Sıralı ağırlıklı kod/faz kestirimi; alıcı saati ve uydu belirsizlikleri |
+| Konum çözümü (v2.0 temel) | `gps_processing/processing/ppp.py` | Sıralı ağırlıklı kod/faz kestirimi; alıcı saati ve uydu belirsizlikleri |
+| EKF çekirdeği | `gps_processing/processing/estimation/` | İterasyonlu EKF, süreç gürültüsü, IGG-III robust, adaptif fading |
+| EKF float PPP | `gps_processing/processing/ppp_ekf.py` | XYZ, saat, ZWD, IF belirsizlikleri; artık tablosu |
+| Fiziksel modeller | `processing/troposphere.py`, `processing/cycle_slip.py` | Saastamoinen + Chao eşleme; LLI/boşluk/MW/GF kayma tespiti |
+| PPP-AR | `gps_processing/processing/ar/` | SDBS/DCM filtresi, ILS, LAMBDA dekorelasyonu, bootstrapping PAR |
+| Makine öğrenmesi | `gps_processing/processing/ml/` | GBRT stokastik model, lojistik AR doğrulayıcı (numpy) |
+| Analiz | `gps_processing/analysis.py` | ENU hataları, yakınsama süresi, yöntem istatistikleri |
 | Dışa aktarım | `gps_processing/io/export.py` | CSV, çok sayfalı Excel ve JSON özet |
 | İşlem servisi | `gps_processing/pipeline.py` | Tüm aşamaların açık veri akışı ve ilerleme olayları |
 | CLI | `gps_processing/cli.py` | Dosya yolları ve işlem seçenekleri |
 | Arayüz | `gps_processing/ui/app.py`, `widgets.py` | Tk masaüstü sekmeleri, dosya seçimi, kuyrukla güvenli arka plan işlemi |
+
+EKF seçenekleri ve yöntem karşılaştırması (CLI):
+
+```bash
+python -m gps_processing --sp3-before Data/…260….SP3 --sp3-day Data/…270….SP3 --sp3-after Data/…280….SP3 \
+  --rinex Data/MADR00ESP_R_20233270000_01D_30S_MO.rnx --estimator ekf --ml-weighting \
+  --reference-xyz 4849202.3940 -360328.9929 4114913.1862 \
+  --compare 'Sequential LS (v2.0)' 'EKF' 'Adaptive + robust EKF' 'EKF + ML weighting' --output results
+```
+
+Seçenekler: `--estimator sequential|ekf|adaptive-ekf`, `--dynamics static|kinematic`, `--no-troposphere`, `--no-physical-corrections`, `--no-robust`, `--integer-method ils|lambda`, `--ar-success-rate`, `--ar-validation ratio|ml|ratio+ml`, `--ml-weighting`, `--ml-validator Data/models/ar_validator.json`. `sequential` v2.0 sonucunu değiştirmeden üretir.
 
 Kütüphane kullanımı:
 
@@ -67,7 +93,7 @@ Yedi özgün Python dosyasının tamamı **`legacy/` altında değiştirilmeden 
 
 Sabit 32 uydu/900 saniye varsayımıyla SP3 satır sayma yerine gerçek epoklar okunur. Saat tahminindeki Random Forest yerine deterministik doğrusal enterpolasyon kullanılır; Lagrange hesabı büyük mutlak zamanlarla polinom üretmek yerine merkezlenmiş barycentric yöntemle yapılır. Bu nedenle sonuçlar eski betiklerle bit düzeyinde aynı değildir. Konum hesabında uydu/epok eşleştirmesi anahtarlarla yapılır, düşük yükseklikli gözlemler gerçekten elenir, tüm çözülen epoklar saklanır. Kestirim saat durumunu her epokta serbest bırakır; faz kilit kaybı işareti, 120 saniyeden uzun boşluk veya 5 metreden büyük MW değişiminde ilgili belirsizliği sıfırlar. Bu eşikler temel araştırma varsayımlarıdır.
 
-İyonosfer/troposfer dosya alanları, PPP-AR/SDBS, Machine Learning ve FCB referans dosyaları arayüzde korunmuştur. **Özgün kodda bunların çözücüleri yoktu**; yeni arayüz bunları tamamlanmış gibi çalıştırmaz ve seçildiklerinde açıklayıcı hata verir. RINEX 2 de desteklenmez. Harici model seçenekleri, ilgili model eklendiğinde `ProcessingConfig` üzerinden işlem servisine bağlanabilir.
+FCB referans dosya alanı korunmuştur; FCB kestirimi henüz uygulanmadı. PPP-AR/SDBS ve PPP-AR/DCM araştırma çözücüleri ayrı modüllerdedir. Makine öğrenmesi ayrı bir yöntem değil, EKF ve AR kestirimine eklenen bileşenler olarak uygulanmıştır (docs/EKF_ML.md); özgün Random Forest kaynağı legacy altında korunur. RINEX 2 de desteklenmez. Harici model seçenekleri, ilgili model eklendiğinde `ProcessingConfig` üzerinden işlem servisine bağlanabilir.
 
 ## Çıktılar
 
@@ -77,7 +103,10 @@ Seçilen klasörde `results.xlsx`, `summary.json` ve her tablo için CSV bulunur
 - `result_gps`, `sat3_df`, `cll` (öncül), `cll_result` (son kovaryans)
 - `dx_1` (son epok durum güncellemesi), `n3_amb` (metre cinsinden float belirsizlik)
 - `xyz_result` (tüm epok koordinatları, alıcı saati, uydu sayısı, kod RMS)
-- `diagnostics` (çözülen/atlanmış epoklar)
+- `diagnostics` (çözülen/atlanmış epoklar; EKF'de NIS, adaptif katsayı, ağırlığı düşürülen uydular)
+- `residuals` (EKF: epok/uydu bazında kod/faz artıkları, yükseklik, SNR, yay uzunluğu — ML eğitim verisi)
+- `statistics` (ENU RMS, son hata, yakınsama, fix oranı); `ml_models.json` (öğrenilen modeller)
+- Karşılaştırmada `comparison/<yöntem>/` klasörleri ve `comparison/statistics.csv`
 
 SP3 koordinatları girişte km, çözümde metredir. SP3 saatleri mikrosaniyedir; alıcı saat çıktısı saniyedir. `epok` ölçüm günü gece yarısından itibaren saniyedir. Eksik gözlemler sıfır yerine eksik değer olarak tutulur. Mevcut örnek RINEX dosyası yaklaşık 12 dakikalık gözlem içerir; başlıktaki tüm güne ait kapsam gerçek kayıt sayısı değildir.
 
@@ -87,8 +116,15 @@ SP3 koordinatları girişte km, çözümde metredir. SP3 saatleri mikrosaniyedir
 python -m unittest discover -s tests -v
 ```
 
-Testler kombinasyonların iyonosferi gidermesini, polinom enterpolasyonunu, yükseklik geometrisini, bilinen sentetik konum/saat çözümünü, değişken uydu sayılı SP3 okumayı, gerçek örnek dosyaları ve desteklenmeyen modları kapsar.
+Testler kombinasyonların iyonosferi gidermesini, polinom enterpolasyonunu, yükseklik geometrisini, bilinen sentetik konum/saat çözümünü, değişken uydu sayılı SP3 okumayı, gerçek örnek dosyaları ve desteklenmeyen modları kapsar. `tests/test_estimation.py` EKF'nin doğrusal LS ile eşdeğerliğini, ZWD/saat/konum kestirimini, robust aykırı gözlem reddini, kinematik izlemeyi, LAMBDA'nın kaba kuvvet ILS ile eşleşmesini, bootstrapping alt sınırını, PAR'ı, ML öğrenicilerini ve örnek veri karşılaştırmasını test eder.
 
-Bu çözüm üretim seviyesinde tam PPP değildir. Troposfer, anten faz merkezi, phase wind-up, relativistik etkiler, gelgit, kod bias düzeltmeleri ve ayrı hassas saat ürünü uygulanmamıştır. SP3 saatleri ile kod RMS/koordinat değerleri jeodezik doğruluk kanıtı değildir. Tam PPP-AR için FCB/bias modelleri ve tamsayı belirsizlik çözümü ayrıca gerekir.
+Bu çözüm üretim seviyesinde tam PPP değildir. EKF kestiricileri Saastamoinen troposferi, ZWD kestirimini ve periyodik relativistik terimi uygular; anten faz merkezi, phase wind-up, gelgit, kod bias düzeltmeleri ve ayrı hassas saat ürünü hâlâ uygulanmamıştır. SP3 saatleri ile kod RMS/koordinat değerleri jeodezik doğruluk kanıtı değildir. PPP-AR çekirdeği eklendi; gerçek ürün okuyucuları ve tam fiziksel PPP düzeltmeleri hâlâ gereklidir. Ayrıntılar docs/PPP_AR.md içindedir.
 
 Tokat Gaziosmanpaşa Üniversitesi · Dr. Furkan KARLITEPE · furkan.karlitepe@gop.edu.tr
+
+
+## Data klasörü ile yeni işlem
+
+Her yeni işlemden önce gerekli girdi dosyalarını proje kökündeki `Data/` klasörüne koyun. PPP için önceki/ölçüm/sonraki gün SP3 ve RINEX 3 gözlem dosyası; PPP-AR için ayrıca yönteme uygun JSON saat/bias ürünü gerekir. Alt klasörler kullanılabilir. Arayüz dosya pencereleri Data içinde açılır; arayüz ve CLI Data dışındaki girdileri reddeder. Çıktı klasörü serbesttir.
+
+“Data klasöründeki verileri seç” önce eski seçimleri temizler, tam üç SP3 ve bir gözlem varsa SP3 başlık tarihlerine göre seçer. Birden çok veri setinde dosyaları Seç düğmeleriyle belirleyin. AR JSON dosyasını İşlem ayarları sekmesinde seçin. Veriler otomatik silinmez veya taşınmaz. CLI örneklerinde dosya yollarının başına `Data/` ekleyin; mevcut örnekleri kullanmak için önce bu dosyaları Data içine kopyalayın.

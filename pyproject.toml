@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "togu-gps-processing"
-version = "2.0.0"
-description = "Modular experimental GPS float PPP processing"
+version = "2.4.0"
+description = "Modular experimental GPS PPP / PPP-AR processing with EKF and machine learning options"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.21", "pandas>=1.4", "openpyxl>=3.0"]
+dependencies = ["numpy>=1.21", "pandas>=1.4", "openpyxl>=3.0", "scikit-learn>=1.6", "scipy>=1.13"]
 
 [project.scripts]
 togu-gps = "gps_processing.cli:main"
