@@ -13,7 +13,7 @@ directly. They apply to the EKF estimators (float PPP and both PPP-AR models). T
 | Columns | `TROTOT` (ZTD), its `STDDEV`, optional `TGNTOT` / `TGETOT`; units from `TROPO PARAMETER UNITS` (IGS: mm) |
 | Time | linear interpolation of ZTD and gradients; epochs more than 1 h outside the file are rejected |
 | Split | ZHD from Saastamoinen (standard atmosphere), a-priori ZWD₀ = ZTD − ZHD |
-| Slant | ZHD·m_h(e) + ZWD₀·m_w(e) (Chao) + m_g(e)·(G_N cos a + G_E sin a), m_g = 1/(sin e tan e + 0.0032) (Chen & Herring 1997) |
+| Slant | ZHD·m_h(e) + ZWD₀·m_w(e) (Niell varsayılan, Chao seçenek) + m_g(e)·(G_N cos a + G_E sin a), m_g = 1/(sin e tan e + 0.0032) (Chen & Herring 1997) |
 | Filter | ZWD estimation on: the state is the residual δZWD, starting at 0 with σ = 2·max(product σ, 5 mm). Off: the product delay is applied as fixed |
 
 The reported `zwd_m` is always the total wet delay (ZWD₀ + δZWD).
@@ -49,3 +49,12 @@ dipole, VMF1/VMF3 or GPT grids, and the use of the GIM as a constraint in an unc
 
 These are available from the IGS data centres (CDDIS, IGN, BKG). Pick the files for the
 observation day.
+
+## Troposfer eşleme fonksiyonu (Niell 1996)
+
+Shi & Gao (2012) ile aynı yapı kullanılır: Saastamoinen ZHD önsel değerdir, Niell eşlemesiyle eğik doğrultuya taşınır ve modelden kalan ZWD filtrede rastgele yürüyüş olarak kestirilir. Troposfer yalnız modelle sabitlenmez. Standart atmosferli modelin cm düzeyindeki ıslak gecikme hatası, düşük yükseklik açısında eşleme ile 5–10 kat büyür ve N1 dalga boyunu (≈10.7 cm) aşar.
+
+- **Niell (varsayılan, `--mapping niell`):** Hidrostatik ve ıslak katsayılar enleme göre (15°–75°) doğrusal enterpolasyonla bulunur. Hidrostatik kısma yıllık terim (faz DOY 28, güney yarımkürede +182.625 gün) ve yükseklik düzeltmesi eklenir. Gün bilgisi gözlem tarihinden alınır.
+- **Chao (`--mapping chao`):** Yalnız yükseklik açısına bağlıdır; v2.x sonuçlarıyla karşılaştırma için tutuldu.
+- **Karşılaştırma:** İki fonksiyon 15° üstünde ‰ düzeyinde, 5°'de yaklaşık %0.5 (kuru) ve %3 (ıslak) farklıdır. 13° maskeli 12 dakikalık MADR verisinde faz artıkları aynı (8.41 mm), ZWD farkı 6 mm.
+- **İyonosfer:** IF kombinasyonu birinci derece etkiyi yok ettiği için Klobuchar gibi bir model IF çözümünde etkisizdir. İkinci derece terim IONEX ile düzeltilir.

@@ -82,9 +82,11 @@ def estimate(config, orbit, obs, satellites, progress=None):
     progress = progress or (lambda percent, message: None)
     obs, satellites, models = antenna_models(config, obs, satellites)
     atmosphere = None
-    if config.ionosphere or config.troposphere:
+    if config.technique != 'PPP' or config.estimator != 'sequential':
+        # Built here so the mapping function gets the day of year (Niell annual term).
         from gps_processing.processing.atmosphere import Atmosphere
-        progress(50, 'Reading external atmosphere products (IONEX / SINEX_TRO)')
+        if config.ionosphere or config.troposphere:
+            progress(50, 'Reading external atmosphere products (IONEX / SINEX_TRO)')
         atmosphere = Atmosphere.from_config(config, obs)
     variance_model = learn_weights(config, obs, satellites, progress, atmosphere) if config.ml_weighting else None
     residuals, products, validator = None, None, None

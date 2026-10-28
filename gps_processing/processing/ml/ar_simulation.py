@@ -16,7 +16,7 @@ labelled correctly as well.
 import numpy as np
 from gps_processing.processing.ar.integer import evaluate
 from gps_processing.processing.ar.models import LAMBDA_N, LAMBDA_W, combination_covariance
-from gps_processing.processing.troposphere import Troposphere
+from gps_processing.processing.troposphere import chao_mapping
 
 FEATURES = ['log_ratio', 'logit_success', 'logit_success_upper', 'log_adop', 'dimension', 'fixed_fraction',
             'log_best_norm', 'log_second_norm', 'stage_n1']
@@ -55,7 +55,7 @@ def narrow_lane_covariance(rng, satellites, epochs, code, phase, interval=30.0):
     e = np.clip(elevation+rate*t, np.radians(5), np.radians(89))  # (epochs, satellites)
     a = azimuth+rate*t
     unit = np.stack([np.cos(e)*np.sin(a), np.cos(e)*np.cos(a), np.sin(e)], -1)
-    _, wet = Troposphere.mapping(np.degrees(e))
+    _, wet = chao_mapping(np.degrees(e))
     # Per satellite: rows Pc, Lc; unknowns dX(3), ZWD, SD N1 of satellites 1..m (0 is the reference).
     rows = np.zeros((epochs, satellites, 2, 4+m))
     rows[..., :3] = -unit[:, :, None, :]

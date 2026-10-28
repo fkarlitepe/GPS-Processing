@@ -31,6 +31,8 @@ def main():
     estimation.add_argument('--position-noise', type=float, default=10.0, help='kinematic random walk, m/√s')
     estimation.add_argument('--troposphere-noise', type=float, default=5.0, help='ZWD random walk, mm/√h')
     estimation.add_argument('--no-troposphere', dest='estimate_troposphere', action='store_false')
+    estimation.add_argument('--mapping', dest='tropo_mapping', choices=['niell', 'chao'], default='niell',
+                            help='troposphere mapping function (Saastamoinen ZHD a priori, residual ZWD estimated)')
     estimation.add_argument('--no-physical-corrections', dest='physical_corrections', action='store_false')
     estimation.add_argument('--no-robust', dest='robust', action='store_false')
     estimation.add_argument('--code-sigma', type=float, default=0.3)

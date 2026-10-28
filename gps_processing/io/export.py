@@ -32,7 +32,7 @@ def export_result(result, directory):
     summary = {'model': result.technique, 'experimental': True, 'epochs_solved': len(result.positions),
                'epochs_skipped': int(result.diagnostics.status.isin(['skipped','yetersiz uydu']).sum()),
                'last_xyz_m': result.positions.iloc[-1][['x','y','z']].tolist(),
-               'limitations': ['EKF estimators apply Saastamoinen hydrostatic delay, Chao mapping, estimated ZWD and periodic relativity; the sequential baseline applies none of them.',
+               'limitations': ['EKF estimators apply Saastamoinen hydrostatic delay, Niell (or Chao) mapping, estimated ZWD and periodic relativity; the sequential baseline applies none of them.',
                                'Antenna PCO/PCV only with an ANTEX file; phase wind-up uses nominal yaw (no eclipse attitude); no solid-earth/ocean tides. Without a RINEX CLK, SP3 clocks are linearly interpolated (15 min SP3: decimetre clock errors, no N1 fixing).',
                                'AR products: normalized JSON, Bias-SINEX code+phase OSB (with the same centre clocks) or GENFCB L1/L2 FCB; no certified failure-rate control. RINEX 2 is not implemented.',
                                'ML models are research tools: the stochastic model is learned from the same session residuals and the AR validator from simulated ambiguities.']}
