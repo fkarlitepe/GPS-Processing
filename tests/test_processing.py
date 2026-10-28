@@ -53,12 +53,12 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(len(amb),18)
 
     def test_sample_readers(self):
-        obs=read_rinex(next(ROOT.glob('*.rnx')))
+        obs=read_rinex(next((ROOT/'Data').glob('*.rnx')))
         self.assertEqual(obs.date.strftime('%Y-%m-%d'),'2023-11-23')
         self.assertEqual(len(obs.approximate_xyz),3)
         self.assertTrue(np.isfinite(obs.combined[['Pc','Lc','A4']]).all().all())
         self.assertTrue({'c1c','l1c','c1w','l1w','c2x','l2x','c2w','l2w','c5x','l5x','c1x','l1x'} <= set(obs.raw))
-        paths=sorted(ROOT.glob('*.SP3'))
+        paths=sorted((ROOT/'Data').glob('*.SP3'))
         orbit=combine_sp3(*paths)
         self.assertLess(orbit.epok.min(),0)
         self.assertGreater(orbit.epok.max(),86400)
@@ -73,7 +73,7 @@ class ProcessingTests(unittest.TestCase):
             self.assertEqual((frame.timestamp.iloc[1]-frame.timestamp.iloc[0]).total_seconds(),900)
 
     def test_unsupported_mode_explicit(self):
-        config=ProcessingConfig(Path('a'),Path('b'),Path('c'),Path('d'),technique='PPP-AR/SDBS')
+        config=ProcessingConfig(Path('a'),Path('b'),Path('c'),Path('d'),technique='PPP-AR/Machine_Learning')
         with self.assertRaises(NotImplementedError): config.validate()
 
 if __name__ == '__main__': unittest.main()

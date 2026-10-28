@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from gps_processing.data_directory import require_data_file
+from gps_processing.processing.estimation.options import ESTIMATORS
 
 @dataclass
 class Observations:
@@ -9,6 +11,7 @@ class Observations:
     raw: pd.DataFrame
     combined: pd.DataFrame
     date: object
+    marker: str = ''
 
 @dataclass
 class ProcessingConfig:
@@ -23,17 +26,72 @@ class ProcessingConfig:
     troposphere: str = ''
     fcb_files: list = field(default_factory=list)
 
+    ar_products: str = ''
+    ar_ratio: float = 3.0
+    ar_min_epochs: int = 20
+    ar_max_std: float = 0.15
+
+    # Estimation: 'sequential' is the v2.0 baseline; EKF variants add process noise,
+    # troposphere, physical corrections and robust/adaptive updates.
+    estimator: str = 'ekf'
+    dynamics: str = 'static'
+    position_noise: float = 10.0
+    estimate_troposphere: bool = True
+    troposphere_noise: float = 5.0
+    physical_corrections: bool = True
+    robust: bool = True
+    code_sigma: float = 0.3
+    phase_sigma: float = 0.003
+    gf_slip_m: float = 0.05
+
+    integer_method: str = 'lambda'
+    ar_success_rate: float = 0.999
+    ar_validation: str = 'ratio'
+    ml_weighting: bool = False
+    ml_threshold: float = 0.99
+    ml_validator: str = ''
+
+    reference_xyz: tuple = None
+
     def validate(self):
-        if self.technique != 'PPP':
-            raise NotImplementedError('PPP-AR/SDBS ve Machine Learning özgün projede taslaktı; FCB çözümü henüz uygulanmadı.')
-        if self.ionosphere or self.troposphere or self.fcb_files:
-            raise NotImplementedError('Harici atmosfer ve FCB dosyası modelleri henüz uygulanmadı. Alanları boş bırakın.')
+        if self.technique not in ('PPP', 'PPP-AR/SDBS', 'PPP-AR/DCM'):
+            raise NotImplementedError('Desteklenen yöntemler: PPP, PPP-AR/SDBS, PPP-AR/DCM.')
+        if self.estimator not in ESTIMATORS:
+            raise ValueError(f'Kestirici {", ".join(ESTIMATORS)} olmalı.')
+        if self.dynamics not in ('static', 'kinematic'):
+            raise ValueError('Dinamik model static veya kinematic olmalı.')
+        from gps_processing.processing.ar.integer import INTEGER_METHODS
+        if self.integer_method not in INTEGER_METHODS or self.ar_validation not in ('ratio', 'ml', 'ratio+ml'):
+            raise ValueError(f'Tamsayı yöntemi {"/".join(INTEGER_METHODS)}, doğrulama ratio/ml/ratio+ml olmalı.')
+        values = [self.position_noise, self.troposphere_noise, self.code_sigma, self.phase_sigma, self.gf_slip_m]
+        if not np.isfinite(values).all() or min(values) <= 0:
+            raise ValueError('Süreç ve gözlem gürültüleri pozitif olmalı.')
+        if not 0 < self.ar_success_rate < 1 or not 0 < self.ml_threshold < 1:
+            raise ValueError('Başarı oranı ve ML olasılık eşiği 0 ile 1 arasında olmalı.')
+        if self.ml_weighting and self.estimator == 'sequential':
+            raise ValueError('ML ağırlıklandırma EKF kestiricisi gerektirir.')
+        if self.ml_validator:
+            require_data_file(self.ml_validator)
+        if self.reference_xyz is not None:
+            reference = np.asarray(self.reference_xyz, dtype=float)
+            if reference.shape != (3,) or not np.isfinite(reference).all() or np.linalg.norm(reference) < 6e6:
+                raise ValueError('Referans koordinat X, Y, Z (metre, ECEF) olmalı.')
+        if not np.isfinite([self.ar_ratio,self.ar_max_std]).all() or self.ar_ratio <= 1 or self.ar_max_std <= 0 or self.ar_min_epochs < 2:
+            raise ValueError('AR ratio > 1, standart sapma > 0 ve minimum epok >= 2 olmalı.')
+        if self.technique != 'PPP' and (not self.ar_products or not Path(self.ar_products).is_file()):
+            raise ValueError('PPP-AR için yönteme uyumlu normalize saat/bias JSON ürünü gerekli.')
+        for extra in [self.ar_products, self.ionosphere, self.troposphere, *self.fcb_files]:
+            if extra:
+                require_data_file(extra)
+        if self.fcb_files:
+            raise NotImplementedError('FCB kestirimi henüz uygulanmadı. Referans listesini boş bırakın.')
+        if (self.ionosphere or self.troposphere) and self.technique == 'PPP' and self.estimator == 'sequential':
+            raise ValueError('IONEX/SINEX_TRO dosyaları EKF kestiricisiyle kullanılır; Sıralı LS v2.0 temel çözümüdür.')
         if not 0 <= self.elevation_mask < 90:
             raise ValueError('Yükseklik maskesi 0 ile 90 derece arasında olmalı.')
         paths = [Path(p) for p in (self.sp3_before, self.sp3_day, self.sp3_after, self.rinex)]
         for path in paths:
-            if not path.is_file():
-                raise ValueError(f'Girdi dosyası bulunamadı: {path}')
+            require_data_file(path)
         if len({p.resolve() for p in paths[:3]}) != 3:
             raise ValueError('Önceki, ölçüm ve sonraki gün için üç farklı SP3 dosyası seçin.')
 
@@ -47,3 +105,9 @@ class ProcessingResult:
     satellites: pd.DataFrame
     orbit: pd.DataFrame
     corrections: np.ndarray
+    technique: str = 'PPP'
+    ar_metadata: dict = field(default_factory=dict)
+    residuals: pd.DataFrame = None
+    statistics: dict = field(default_factory=dict)
+    ml_models: dict = field(default_factory=dict)
+    settings: dict = field(default_factory=dict)

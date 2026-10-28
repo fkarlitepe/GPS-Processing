@@ -11,20 +11,37 @@ def export_result(result, directory):
         'mw_ion_gps': result.observations.combined,
         'xyz0_apprx': pd.DataFrame(result.observations.approximate_xyz, columns=['coordinate']),
         'result_gps': result.observations.combined, 'sat3_df': result.satellites,
-        'cll': pd.DataFrame(initial_covariance()), 'cll_result': pd.DataFrame(result.covariance),
+        'cll_result': pd.DataFrame(result.covariance),
         'dx_1': pd.DataFrame(result.corrections, columns=['correction']),
         'n3_amb': result.ambiguities, 'xyz_result': result.positions,
         'diagnostics': result.diagnostics,
     }
+    if result.technique == 'PPP' and result.covariance.shape == (36, 36):
+        tables['cll'] = pd.DataFrame(initial_covariance())
+    if result.technique != 'PPP':
+        tables['ar_diagnostics'] = result.diagnostics
+    if result.residuals is not None:
+        tables['residuals'] = result.residuals
+    if result.statistics:
+        tables['statistics'] = pd.DataFrame([result.statistics])
     for name, table in tables.items():
         table.to_csv(directory/f'{name}.csv', index=False)
     with pd.ExcelWriter(directory/'results.xlsx', engine='openpyxl') as writer:
         for name, table in tables.items():
             table.to_excel(writer, sheet_name=name, index=False)
-    summary = {'model': 'experimental float PPP', 'epochs_solved': len(result.positions),
-               'epochs_skipped': int((result.diagnostics.status != 'çözüldü').sum()),
+    summary = {'model': result.technique, 'experimental': True, 'epochs_solved': len(result.positions),
+               'epochs_skipped': int(result.diagnostics.status.isin(['skipped','yetersiz uydu']).sum()),
                'last_xyz_m': result.positions.iloc[-1][['x','y','z']].tolist(),
-               'limitations': ['No tropospheric model, antenna corrections, relativistic correction or precise clock product.',
-                               'PPP-AR, external atmosphere models and RINEX 2 are not implemented.']}
-    (directory/'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
+               'limitations': ['EKF estimators apply Saastamoinen hydrostatic delay, Chao mapping, estimated ZWD and periodic relativity; the sequential baseline applies none of them.',
+                               'No antenna PCO/PCV, phase wind-up, tides or code biases. SP3 clocks are linearly interpolated from 15 min samples. Orbit emission time uses SP3 clocks.',
+                               'AR uses normalized research products; no native BIA/DC ingestion or certified failure-rate control. External atmosphere models and RINEX 2 are not implemented.',
+                               'ML models are research tools: the stochastic model is learned from the same session residuals and the AR validator from simulated ambiguities.']}
+    summary['ar_products_and_settings'] = result.ar_metadata
+    summary['settings'] = result.settings
+    summary['statistics'] = result.statistics
+    if 'status' in result.positions:
+        summary['solution_status_counts'] = result.positions.status.value_counts().to_dict()
+    (directory/'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False, default=float), encoding='utf-8')
+    if result.ml_models:
+        (directory/'ml_models.json').write_text(json.dumps(result.ml_models), encoding='utf-8')
     return directory
