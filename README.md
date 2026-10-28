@@ -6,6 +6,8 @@ GPS Precise Point Positioning (PPP) araştırma projesi.
 
 **v2.5:** Integer phase clock (IPC, Laurichesse) kullanıcı modeli eklendi (`--technique PPP-AR/IPC`). SDBS/DCM, Shi & Gao (2014) karşılaştırmasına göre gözden geçirildi; referans uydu değişiminde belirsizlikler artık sıfırlanmıyor, tamsayı kaydırmayla korunuyor. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
 
+**v2.6:** Gerçek ürünler: RINEX CLK saatleri (`--clock-file`), Bias-SINEX kod+faz OSB (`--ar-products *.BIA`) ve GENFCB FCB (`*.fcb`) AR ürünleri, ANTEX PCO/PCV (`--antex`) ve faz wind-up; tek günlük SP3 desteği. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
+
 Ayrıca (Banville et al. 2008): Bias-SINEX DSB/OSB dosyasıyla C1C/C2L gibi kodlar C1W/C2W'ye hizalanır (`--code-biases`), alıcı milisaniye saat sıçramaları algılanıp fazdan giderilir (varsayılan açık, `--no-clock-jump-repair`).
 
 **v2.4:** LAMBDA'ya alternatif tamsayı kestiricileri eklendi: dekorelasyonlu integer bootstrapping (+PAR) ve TCAR/CIR ilkesine göre kademeli yuvarlama (`--integer-method bootstrap|cascade`). Başarı oranları Ps-LAMBDA formülleriyle raporlanıyor; AR için ML doğrulayıcı scikit-learn ile seçildi. Ayrıntılar: [EKF ve ML belgesi](docs/EKF_ML.md).
@@ -50,6 +52,9 @@ Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü a
 | Veri sözleşmeleri | `gps_processing/models.py` | Girdiler, doğrulama, gözlemler ve sonuçlar |
 | SP3 | `gps_processing/io/sp3.py` | GPS yörünge/saat okuma; gerçek tarihlerle gün birleştirme |
 | RINEX 3 | `gps_processing/io/rinex.py` | Başlığa göre gözlem alanları; L1/L2/L5 fazlarının metreye dönüşümü |
+| Saat dosyası | `gps_processing/io/clock_rinex.py` | RINEX CLK 30 s / 5 s uydu saatleri |
+| AR ürünleri | `gps_processing/io/osb_products.py`, `io/fcb_products.py` | Bias-SINEX kod+faz OSB ve GENFCB FCB → IF kod/faz ve MW düzeltmeleri |
+| Anten modelleri | `gps_processing/io/antex.py`, `processing/antenna.py` | ANTEX PCO/PCV, nominal yaw, faz wind-up |
 | Kod biasları | `gps_processing/io/bias_sinex.py` | Bias-SINEX DSB/OSB okuma; C1C/C2L… kodlarını C1W/C2W'ye hizalama |
 | Saat sıçraması | `gps_processing/processing/clock_jump.py` | 1 ms alıcı saat sıçramalarının algılanması ve fazdan giderilmesi |
 | Kombinasyonlar | `gps_processing/processing/combinations.py` | Ionosphere-free ve Melbourne–Wübbena |

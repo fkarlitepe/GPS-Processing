@@ -12,10 +12,15 @@ def read_rinex(path):
     if not lines or not lines[0].lstrip().startswith('3.'):
         raise ValueError('Yalnız RINEX 3 gözlem dosyaları destekleniyor.')
     types, xyz, system, end, marker = {}, None, None, None, ''
+    antenna, delta = '', (0.0, 0.0, 0.0)
     for i, line in enumerate(lines):
         label = line[60:].strip()
         if label == 'MARKER NAME':
             marker = line[:60].strip()
+        elif label == 'ANT # / TYPE':
+            antenna = line[20:40]
+        elif label == 'ANTENNA: DELTA H/E/N':
+            delta = tuple(float(v) for v in line[:42].split()[:3])
         elif label == 'APPROX POSITION XYZ':
             xyz = np.array([float(v) for v in line[:60].split()])
         elif label == 'SYS / # / OBS TYPES':
@@ -101,4 +106,5 @@ def read_rinex(path):
     combined = combined.replace([np.inf, -np.inf], np.nan).dropna(subset=['Pc', 'Lc', 'A4'])
     if combined.empty:
         raise ValueError('Geçerli çift frekanslı GPS kod/faz çifti bulunamadı.')
-    return Observations(xyz, raw, combined.reset_index(drop=True), first_date, marker)
+    return Observations(xyz, raw, combined.reset_index(drop=True), first_date, marker,
+                        antenna_type=antenna, antenna_delta=delta)

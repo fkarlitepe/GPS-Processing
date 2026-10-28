@@ -62,7 +62,7 @@ def unknowns(technique, ekf, tropo, external_tropo=False):
 
 
 def product_kind(name):
-    """'ionosphere' for IONEX (*.INX, legacy *.yyI), 'troposphere' for SINEX_TRO (*.TRO, *.zpd), 'code_biases' for Bias-SINEX (*.BSX, *.BIA); gz allowed."""
+    """'ionosphere' for IONEX (*.INX, legacy *.yyI), 'troposphere' for SINEX_TRO (*.TRO, *.zpd), 'code_biases' for Bias-SINEX (*.BSX, *.BIA), 'clock_file' (*.CLK), 'antex' (*.ATX); gz allowed."""
     name = re.sub(r'\.(GZ|Z)$', '', name.upper())
     if name.endswith('.INX') or re.search(r'\.\d\dI$', name):
         return 'ionosphere'
@@ -70,6 +70,10 @@ def product_kind(name):
         return 'troposphere'
     if name.endswith('.BSX') or name.endswith('.BIA'):
         return 'code_biases'
+    if name.endswith('.CLK') or name.endswith('.CLK_30S') or re.search(r'\.\d\dC$', name):
+        return 'clock_file'
+    if name.endswith('.ATX'):
+        return 'antex'
     return None
 
 
@@ -113,13 +117,14 @@ class Application(tk.Tk):
         self.build_settings(settings)
         self.build_output(output)
         self.build_comparison(comparison)
-        ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGPS Precise Point Positioning — v2.5\n\n'
+        ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGPS Precise Point Positioning — v2.6\n\n'
                   'Float PPP and PPP-AR user models (SDBS — Ge et al., DCM — Collins, integer phase clock — Laurichesse);\niterated extended Kalman filter '
                   '(process noise, ZWD estimation, IGG-III robust update, adaptive fading), LAMBDA decorrelation and partial AR,\n'
                   'a stochastic model learned from residuals (gradient-boosted trees) and an AR validator trained by Monte Carlo.\n'
                   'External products: IONEX global ionosphere maps (single-layer model, second-order IF term) and\n'
                   'SINEX_TRO station zenith delays (a-priori ZTD + horizontal gradients).\n\n'
-                  'Antenna PCO/PCV, phase wind-up, tides and code biases are not applied, so results are for research only;\n'
+                  'Real AR products: RINEX CLK clocks, Bias-SINEX code/phase OSB (integer clocks) and GENFCB FCB; ANTEX PCO/PCV and phase wind-up.\n'
+                  'Solid-earth and ocean tides and eclipse attitude are not modelled, so results are for research only;\n'
                   'no geodetic accuracy is guaranteed. Details: docs/PPP_AR.md, docs/EKF_ML.md and docs/ATMOSPHERE.md.\n\n'
                   'The original sources are preserved in the legacy/ folder.',justify='left',wraplength=950).pack(anchor='w')
         self.status = ttk.Label(shell,text='Ready'); self.status.pack(anchor='w',pady=(12,4))
@@ -144,13 +149,15 @@ class Application(tk.Tk):
         return outer, inner
 
     def build_inputs(self, inputs):
-        for key,label in [('sp3_before','SP3 · Previous day'),('sp3_day','SP3 · Observation day'),('sp3_after','SP3 · Next day'),('rinex','RINEX 3 · GPS observations'),('output','Output folder')]:
+        for key,label in [('sp3_before','SP3 · Previous day (optional)'),('sp3_day','SP3 · Observation day'),('sp3_after','SP3 · Next day (optional)'),
+                          ('clock_file','Satellite clocks · RINEX CLK (optional)'),('antex','Antenna model · ANTEX (optional)'),
+                          ('rinex','RINEX 3 · GPS observations'),('output','Output folder')]:
             field = FileField(inputs,label,directory=key=='output')
             field.pack(fill='x', pady=10)
             self.fields[key] = field
         self.fields['output'].value.set(str(Path('results').resolve()))
         ttk.Button(inputs,text='Select files from the Data folder',command=self.load_example).pack(anchor='w',pady=16)
-        ttk.Label(inputs,text='Fill the Data folder with the required files before processing.\nPPP: 3 consecutive daily SP3 files + 1 RINEX 3 observation file.\nPPP-AR: additionally a clock/bias JSON product for the chosen method (IPC also accepts a DCM product).\nOptional: IONEX (*.INX) and SINEX_TRO (*.TRO) atmosphere products — see Processing settings.').pack(anchor='w')
+        ttk.Label(inputs,text='Fill the Data folder with the required files before processing.\nPPP: 3 consecutive daily SP3 files (or one single-day SP3 with its RINEX CLK) + 1 RINEX 3 observation file.\nPPP-AR: additionally a product for the chosen method — normalized JSON, Bias-SINEX code+phase OSB (*.BIA, needs SP3 + CLK of the same centre and ANTEX) or a GENFCB L1/L2 FCB file (*.fcb).\nClocks: a 30 s / 5 s RINEX CLK replaces the 15 min SP3 clocks. ANTEX: satellite PCO and receiver ARP/PCO/PCV.\nOptional: IONEX (*.INX) and SINEX_TRO (*.TRO) atmosphere products — see Processing settings.').pack(anchor='w')
 
     def row(self, rows, widget, **pack):
         """Register a widget for ordered show/hide; ``arrange`` re-packs the visible ones."""
@@ -183,7 +190,7 @@ class Application(tk.Tk):
         self.technique.bind('<<ComboboxSelected>>', lambda event: self.update_states())
         self.technique_info = tk.StringVar()
         self.row(self.rows[method], ttk.Label(method, textvariable=self.technique_info, wraplength=950, foreground=MUTED), anchor='w', pady=(6,2))
-        self.fields['ar_products'] = self.ar_field = self.row(self.rows[method], FileField(method, 'AR clock/bias product (JSON)'), fill='x', pady=6)
+        self.fields['ar_products'] = self.ar_field = self.row(self.rows[method], FileField(method, 'AR product (JSON / OSB *.BIA / FCB *.fcb)'), fill='x', pady=6)
         self.mask = self.row(self.rows[method], LabeledValue(method, 'Elevation mask (deg)', 'float', 10, step=1), fill='x', pady=4)
         self.fields['code_biases'] = self.row(self.rows[method], FileField(method, 'Code biases (Bias-SINEX)'), fill='x', pady=(6,2))
         self.row(self.rows[method], ttk.Label(method, wraplength=950, foreground=MUTED, justify='left', text=
@@ -204,6 +211,7 @@ class Application(tk.Tk):
         self.estimate_troposphere = self.row(rows, LabeledValue(ekf, 'Estimate zenith wet delay (ZWD)', 'bool', True))
         self.troposphere_noise = self.row(rows, LabeledValue(ekf, 'ZWD process noise', 'float', 5.0, step=1, hint='mm/√h random walk'))
         self.physical = self.row(rows, LabeledValue(ekf, 'Physical corrections', 'bool', True, hint='Saastamoinen ZHD + Chao mapping + periodic relativity'))
+        self.windup = self.row(rows, LabeledValue(ekf, 'Phase wind-up', 'bool', True, hint='nominal-yaw wind-up on the IF phase; required by OSB/FCB AR products'))
         self.robust = self.row(rows, LabeledValue(ekf, 'Robust update (IGG-III)', 'bool', True, hint='down-weights outlying observations'))
         self.code_sigma = self.row(rows, LabeledValue(ekf, 'Raw code σ (zenith)', 'float', 0.3, step=0.1, hint='m'))
         self.phase_sigma = self.row(rows, LabeledValue(ekf, 'Raw phase σ (zenith)', 'float', 0.003, step=0.001, hint='m'))
@@ -341,7 +349,7 @@ class Application(tk.Tk):
         if not ar:
             hidden |= {self.ar_field, self.ar_section, self.fcb_section}
         if not ekf:
-            hidden |= {self.dynamics, self.estimate_troposphere, self.physical, self.robust, self.ml_section}
+            hidden |= {self.dynamics, self.estimate_troposphere, self.physical, self.windup, self.robust, self.ml_section}
             if not ar:
                 # v2.0 LS uses its own fixed weights and no atmosphere models.
                 hidden |= {self.code_sigma, self.phase_sigma, self.atmosphere_section}
@@ -382,19 +390,37 @@ class Application(tk.Tk):
         for key, field in self.fields.items():
             if key != 'output': field.value.set('')
         self.fcb.delete(0, 'end')
-        files=[p for p in DATA_DIR.rglob('*') if p.is_file()]
+        files=[p for p in DATA_DIR.rglob('*') if p.is_file() and 'models' not in p.parts]
         orbits=[p for p in files if p.suffix.lower()=='.sp3']
-        observations=[p for p in files if p.suffix.lower() in ('.rnx','.obs') or p.suffix.lower().endswith('o')]
-        if len(orbits)!=3 or len(observations)!=1:
-            messagebox.showinfo('Data folder', f'{DATA_DIR}\n\nFound {len(orbits)} SP3 and {len(observations)} observation files.\nFor automatic selection place 3 SP3 files and 1 observation file; with several data sets use the Browse buttons.')
+        # Navigation files (*_MN.rnx, *.23n) are not observations.
+        observations=[p for p in files if (p.suffix.lower() in ('.rnx','.obs') or p.suffix.lower().endswith('o'))
+                      and not re.search(r'_[A-Z]N\.RNX$', p.name.upper())]
+        clocks=[p for p in files if product_kind(p.name)=='clock_file']
+        if len(observations)!=1 or not orbits:
+            messagebox.showinfo('Data folder', f'{DATA_DIR}\n\nFound {len(orbits)} SP3 and {len(observations)} observation files.\nFor automatic selection place 1 observation file and either 3 daily SP3 files or one analysis-centre set (SP3 + CLK + BIA + ATX); otherwise use the Browse buttons.')
             return
         try:
             from gps_processing.io.sp3 import read_sp3
-            orbits.sort(key=lambda path: read_sp3(require_data_file(path)).timestamp.min())
-            for key,path in zip(('sp3_before','sp3_day','sp3_after','rinex'),[*orbits,observations[0]]):
-                self.fields[key].value.set(str(require_data_file(path)))
-            # Optional atmosphere products are picked up only when unambiguous.
-            for key in ('ionosphere', 'troposphere', 'code_biases'):
+            self.fields['rinex'].value.set(str(require_data_file(observations[0])))
+            # One analysis-centre set (e.g. GBM...ORB.SP3 + ...CLK + ...BIA): consistent orbit, clock and OSB.
+            centre=[(c,[o for o in orbits if o.name[:3]==c.name[:3]]) for c in clocks]
+            centre=[(c,o[0]) for c,o in centre if len(o)==1]
+            if len(centre)==1:
+                clock, orbit = centre[0]
+                self.fields['sp3_day'].value.set(str(require_data_file(orbit)))
+                self.fields['clock_file'].value.set(str(require_data_file(clock)))
+                biases=[p for p in files if product_kind(p.name)=='code_biases' and p.name[:3]==clock.name[:3]]
+                if len(biases)==1:
+                    self.fields['ar_products'].value.set(str(require_data_file(biases[0])))
+            else:
+                daily=sorted((p for p in orbits if len(p.name)<10 or p.name[:3] not in {c.name[:3] for c in clocks}),
+                             key=lambda path: read_sp3(require_data_file(path)).timestamp.min())
+                if len(daily)!=3:
+                    raise ValueError(f'Expected 3 daily SP3 files, found {len(daily)}; use the Browse buttons.')
+                for key,path in zip(('sp3_before','sp3_day','sp3_after'),daily):
+                    self.fields[key].value.set(str(require_data_file(path)))
+            # Optional products are picked up only when unambiguous.
+            for key in ('ionosphere', 'troposphere', 'antex') + (() if len(centre)==1 else ('code_biases',)):
                 found = [p for p in files if product_kind(p.name) == key]
                 if len(found) == 1:
                     self.fields[key].value.set(str(require_data_file(found[0])))
@@ -426,7 +452,7 @@ class Application(tk.Tk):
             physical_corrections=self.physical.get(), robust=self.robust.get(), code_sigma=self.code_sigma.get(),
             phase_sigma=self.phase_sigma.get(), integer_method=INTEGER[self.integer_method.get()],
             ar_success_rate=self.success_rate.get(), ar_validation=VALIDATION[self.validation.get()],
-            repair_clock_jumps=self.clock_jumps.get(), ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),
+            repair_clock_jumps=self.clock_jumps.get(), phase_windup=self.windup.get(), ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),
             ml_weighting=self.ml_weighting.get(), ml_threshold=self.ml_threshold.get(),
             reference_xyz=tuple(float(v) for v in reference) if reference else None)
         config.validate()

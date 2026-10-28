@@ -13,6 +13,8 @@ class Observations:
     date: object
     marker: str = ''
     clock_jumps: list = field(default_factory=list)
+    antenna_type: str = ''                       # RINEX 'ANT # / TYPE' columns 21-40 (type + radome)
+    antenna_delta: tuple = (0.0, 0.0, 0.0)       # 'ANTENNA: DELTA H/E/N' (m)
 
 @dataclass
 class ProcessingConfig:
@@ -26,6 +28,9 @@ class ProcessingConfig:
     ionosphere: str = ''
     troposphere: str = ''
     code_biases: str = ''
+    clock_file: str = ''          # RINEX CLK (30 s / 5 s) replacing the SP3 clocks
+    antex: str = ''               # ANTEX: satellite PCO, receiver ARP/PCO/PCV
+    phase_windup: bool = True     # EKF and PPP-AR only (sequential v2.0 baseline unchanged)
     repair_clock_jumps: bool = True
     fcb_files: list = field(default_factory=list)
 
@@ -82,21 +87,25 @@ class ProcessingConfig:
         if not np.isfinite([self.ar_ratio,self.ar_max_std]).all() or self.ar_ratio <= 1 or self.ar_max_std <= 0 or self.ar_min_epochs < 2:
             raise ValueError('AR ratio > 1, standart sapma > 0 ve minimum epok >= 2 olmalı.')
         if self.technique != 'PPP' and (not self.ar_products or not Path(self.ar_products).is_file()):
-            raise ValueError('PPP-AR için yönteme uyumlu normalize saat/bias JSON ürünü gerekli.')
-        for extra in [self.ar_products, self.ionosphere, self.troposphere, self.code_biases, *self.fcb_files]:
+            raise ValueError('PPP-AR için yönteme uyumlu saat/bias ürünü gerekli: normalize JSON veya Bias-SINEX OSB (*.BIA).')
+        for extra in [self.ar_products, self.ionosphere, self.troposphere, self.code_biases, self.clock_file, self.antex, *self.fcb_files]:
             if extra:
                 require_data_file(extra)
+        from gps_processing.pipeline import is_osb
+        if self.technique != 'PPP' and is_osb(self.ar_products) and not (self.clock_file and self.antex and self.phase_windup):
+            raise ValueError('OSB (Bias-SINEX) AR ürünleri aynı merkezin saat dosyası (RINEX CLK), ANTEX ve faz '
+                             'wind-up ile kullanılmalı: faz biasları bu modellerle kestirilmiştir.')
         if self.fcb_files:
             raise NotImplementedError('FCB kestirimi henüz uygulanmadı. Referans listesini boş bırakın.')
         if (self.ionosphere or self.troposphere) and self.technique == 'PPP' and self.estimator == 'sequential':
             raise ValueError('IONEX/SINEX_TRO dosyaları EKF kestiricisiyle kullanılır; Sıralı LS v2.0 temel çözümüdür.')
         if not 0 <= self.elevation_mask < 90:
             raise ValueError('Yükseklik maskesi 0 ile 90 derece arasında olmalı.')
-        paths = [Path(p) for p in (self.sp3_before, self.sp3_day, self.sp3_after, self.rinex)]
+        paths = [Path(p) for p in (self.sp3_before, self.sp3_day, self.sp3_after, self.rinex) if str(p or '').strip() not in ('', '.')]
         for path in paths:
             require_data_file(path)
-        if len({p.resolve() for p in paths[:3]}) != 3:
-            raise ValueError('Önceki, ölçüm ve sonraki gün için üç farklı SP3 dosyası seçin.')
+        if len({p.resolve() for p in paths}) != len(paths):
+            raise ValueError('Önceki, ölçüm ve sonraki gün için farklı SP3 dosyaları seçin (önceki/sonraki gün isteğe bağlı).')
 
 @dataclass
 class ProcessingResult:

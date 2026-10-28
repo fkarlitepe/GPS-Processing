@@ -115,6 +115,23 @@ Banville, Santerre, Cocard & Langley (2008) iki şeyi gösterir: (1) kod biaslar
 - **Kod biası hizalaması** (`gps_processing/io/bias_sinex.py`, `--code-biases`): Bias-SINEX 1.00 dosyasındaki uydu DSB/OSB değerleri okunur (ters yönlü DSB ve OSB çiftleri de kullanılır, alıcı satırları atlanır). C1W/C2W dışındaki kodlar (C1C, C1X, C2L, C2X…) `C − DSB(C, CW)` ile W eşdeğerine çevrilir; Pc, A4 ve yayım zamanı kodu doğrusal olduğu için doğrudan düzeltilir. Faz değiştirilmez: IGS kuralında bir frekansın uydu faz biası izleme modundan bağımsızdır, alıcı tarafındaki farklar tüm uydular için ortaktır. AR ürün kontrolü hizalanmış satırlarda kodun tam, fazın yalnız frekans olarak eşleşmesini ister. DSB'si olmayan satırlar hizalanmaz ve AR ürün kontrolünde reddedilir.
 - **Saat sıçraması onarımı** (`gps_processing/processing/clock_jump.py`, varsayılan açık, `--no-clock-jump-repair`): Ardışık epoklarda kesintisiz uydular için Δ(Pc − Lc) hesaplanır. Medyan 1 ms'nin tam katına yuvarlanır; uyduların en az %80'i bu değere 30 m içinde uyuyorsa sıçrama kabul edilir ve tam `k·c·1 ms` değeri o epoktan sonra Lc ve A4'e eklenir. Kod ve zaman etiketi değişmez, GF etkilenmez. Bulunan sıçramalar `summary.json` → `settings.clock_jumps` alanına yazılır. Sentetik testte onarımsız DCM çözümü sıçramada bütün arc'ları yeniden başlatıp `ar_min_epochs − 1` epok float kalıyor; onarımlı çözüm fix'i koruyor.
 
+## Gerçek AR ürünleri: saat, OSB, FCB ve anten modelleri (v2.6)
+
+PPP-ARISEN (Zhang et al. 2023) karşılaştırmasında en büyük eksik gerçek ürünlerin okunamamasıydı. Eklenenler:
+
+| Bileşen | Dosya | Açıklama |
+|---|---|---|
+| RINEX CLK | `io/clock_rinex.py` (`--clock-file`) | 30 s / 5 s uydu saatleri SP3 saatlerinin yerine; yalnız örnekleme aralığı içinde doğrusal enterpolasyon, 120 s üstü boşluklar ve saati olmayan uydular atılır. Tek günlük SP3 (ör. 5 dk MGEX) için önceki/sonraki gün isteğe bağlı. |
+| OSB ürünleri | `io/osb_products.py` (`--ar-products *.BIA`) | Bias-SINEX kod+faz OSB (CODE, GFZ, WHU…). `gözlem − OSB` ile IF kod, IF faz ve MW düzeltmeleri; faz OSB'si frekans bazında (L1W için L1C). Aynı merkezin saat dosyası, ANTEX ve wind-up zorunlu; farklı merkez öneki reddedilir. |
+| FCB ürünleri | `io/fcb_products.py` (`--ar-products *.fcb`) | GENFCB L1/L2 FCB (çevrim): `phase_m = −IF(λ_i b_i)`, `mw_m = −λ_W (b1 − b2)`. NL kısmı yalnız FCB'nin üretildiği yörünge/saat ürünüyle geçerlidir; dosya bunu belirtmez. |
+| ANTEX | `io/antex.py`, `processing/antenna.py` (`--antex`) | Uydu IF PCO'su nominal yaw ekseninde (kütle merkezi → faz merkezi); alıcı ARP (RINEX `ANTENNA: DELTA H/E/N`), PCO ve NOAZI PCV, IF ve MW'ye. |
+| Faz wind-up | `processing/antenna.py` | Wu et al. (1993), RTKLIB formülleri; IF fazda `λ_NL·φ`, MW etkilenmez. EKF ve AR'de varsayılan açık; sıralı v2.0 temel çözüm değişmez. |
+
+**Gerçek veri kontrolü (MADR, 23.11.2023, GBM ürünleri):**
+- Faz artıklarının RMS'i: IGS 15 dk SP3 saatleriyle 52 mm, GBM 30 s CLK ile 9.7 mm, ANTEX + wind-up ile 8.4 mm.
+- WL kesirleri (alıcı biası çıkarıldıktan sonra, σ < 0.3 çevrim olan arc'lar): GBM OSB ≤ 0.07, WHU OSB ≤ 0.08, jxf FCB ≤ 0.09 çevrim. Düzeltmesiz MW'de 0.33 çevrime kadar. İşaretler bu testle doğrulandı (`tests/test_products.py`, GBM seti varsa çalışır).
+- Örnek RINEX dosyası yalnız ilk 12 dakikayı (25 epok) içerir. Bu sürede IPC WL'leri çözüyor, ancak N1 başarı oranı ~0.001 olduğundan kapılar fix'e izin vermiyor (beklenen davranış). N1/NL doğrulaması için tam günlük gözlem gerekir.
+
 ## Mevcut sınırlar ve sonraki bilimsel adımlar
 
 Troposfer kestirimi, ANTEX, phase wind-up, relativistik düzeltmeler, yüklemeler ve gerçek hassas saat/bias sağlayıcı adaptörleri bu değişiklikte tamamlanmadı. Yörünge yayım zamanı hâlâ SP3 saatiyle hesaplanır. Bu nedenle gerçek veride elde edilen herhangi bir `partial_fixed` etiketi jeodezik doğruluk kanıtı değildir. Uzun süreli gerçek gözlemler, bağımsız istasyon koordinatları ve uyumlu ürünlerle dış doğrulama gerekir. Ağ FCB kestirimi, IPC/OSB yöntemi ve FFRT için ayrı sonraki modüller planlanabilir; şu an seçenek olarak tamamlanmış gösterilmezler.
