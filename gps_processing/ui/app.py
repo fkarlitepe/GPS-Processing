@@ -12,7 +12,7 @@ from gps_processing.pipeline import run, compare, slug, VARIANTS, AR_ONLY
 from gps_processing.processing.ml.ar_validation import CANDIDATES, DEFAULT_MODEL
 from gps_processing.ui.widgets import FileField, LabeledValue, LinePlot
 
-ESTIMATORS = {'EKF (extended Kalman filter)': 'ekf', 'Adaptive EKF (fading)': 'adaptive-ekf', 'Sequential LS (v2.0 baseline)': 'sequential'}
+ESTIMATORS = {'EKF (extended Kalman filter)': 'ekf', 'Adaptive EKF (variance factor per observation group)': 'adaptive-ekf', 'Sequential LS (v2.0 baseline)': 'sequential'}
 INTEGER = {'LAMBDA + partial AR (PAR)': 'lambda', 'Bounded ILS (v2.0)': 'ils',
            'Integer bootstrapping, decorrelated + PAR': 'bootstrap', 'Cascade rounding (TCAR / CIR)': 'cascade'}
 INTEGER_INFO = {
@@ -21,7 +21,8 @@ INTEGER_INFO = {
     'bootstrap': 'Sequential conditional rounding of the LAMBDA-decorrelated ambiguities: no search, exact success rate, close to ILS (Teunissen et al. 2002, conclusion 4).',
     'cascade': 'TCAR/CIR principle: pre-defined frequency combinations (wide lane, then N1) and each satellite pair rounded on its own, ignoring correlation between pairs. Geometry-free style; lower success rate than LAMBDA.',
 }
-VALIDATION = {'Ratio test': 'ratio', 'ML validator': 'ml', 'Ratio + ML': 'ratio+ml'}
+VALIDATION = {'FFRT — fixed failure rate ratio test': 'ffrt', 'Ratio test + success rate (v2.8)': 'ratio', 'ML validator (bias-aware)': 'ml',
+              'FFRT + ML': 'ffrt+ml', 'Ratio + ML': 'ratio+ml'}
 TECHNIQUES = {
     'PPP': 'Float PPP: ionosphere-free code + phase; ambiguities stay real-valued. No extra product needed (SP3 + RINEX).',
     'PPP-AR/SDBS': 'Between-satellite single differences (Collins 2008 / Shi 2012 §4.1), WL → N1 fixing. Requires consistent code clocks and satellite WL/N1 bias products.',
@@ -79,7 +80,7 @@ def load_logo(height):
 
 
 def product_kind(name):
-    """'ionosphere' for IONEX (*.INX, legacy *.yyI), 'troposphere' for SINEX_TRO (*.TRO, *.zpd), 'code_biases' for Bias-SINEX (*.BSX, *.BIA), 'clock_file' (*.CLK), 'antex' (*.ATX); gz allowed."""
+    """'ionosphere' for IONEX (*.INX, legacy *.yyI), 'troposphere' for SINEX_TRO (*.TRO, *.zpd), 'code_biases' for Bias-SINEX (*.BSX, *.BIA), 'clock_file' (*.CLK), 'antex' (*.ATX), 'ocean_loading' (*.BLQ), 'erp' (*.ERP); gz allowed."""
     name = re.sub(r'\.(GZ|Z)$', '', name.upper())
     if name.endswith('.INX') or re.search(r'\.\d\dI$', name):
         return 'ionosphere'
@@ -91,6 +92,10 @@ def product_kind(name):
         return 'clock_file'
     if name.endswith('.ATX'):
         return 'antex'
+    if name.endswith('.BLQ'):
+        return 'ocean_loading'
+    if name.endswith('.ERP'):
+        return 'erp'
     return None
 
 
@@ -149,15 +154,15 @@ class Application(tk.Tk):
         if self.logo is not None:
             ttk.Label(about_row, image=self.logo).pack(side='left', anchor='n', padx=(0,24))
         about = ttk.Frame(about_row); about.pack(side='left', anchor='n', fill='x', expand=True)
-        ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGNSS Precise Point Positioning (GPS + Galileo) — v2.8\n\n'
+        ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGNSS Precise Point Positioning (GPS + Galileo) — v2.9\n\n'
                   'Float PPP and PPP-AR user models (SDBS — Ge et al., DCM — Collins, integer phase clock — Laurichesse);\niterated extended Kalman filter '
                   '(process noise, ZWD estimation, IGG-III robust update, adaptive fading), LAMBDA decorrelation and partial AR,\n'
                   'a stochastic model learned from residuals (gradient-boosted trees) and an AR validator trained by Monte Carlo.\n'
                   'External products: IONEX global ionosphere maps (single-layer model, second-order IF term) and\n'
                   'SINEX_TRO station zenith delays (a-priori ZTD + horizontal gradients).\n\n'
                   'Real AR products: RINEX CLK clocks, Bias-SINEX code/phase OSB (integer clocks) and GENFCB FCB; ANTEX PCO/PCV and phase wind-up.\n'
-                  'Solid-earth and ocean tides and eclipse attitude are not modelled, so results are for research only;\n'
-                  'no geodetic accuracy is guaranteed. Details: docs/PPP_AR.md, docs/EKF_ML.md and docs/ATMOSPHERE.md.\n\n'
+                  'Site models: solid Earth tide, ocean loading (BLQ), pole tide (ERP), Shapiro delay, satellite PCV and ORBEX attitude.\n'
+                  'Research software: no geodetic accuracy is guaranteed. Details: docs/PPP_AR.md, docs/EKF_ML.md, docs/ATMOSPHERE.md and docs/MODELS.md.\n\n'
                   'The original sources are preserved in the legacy/ folder.',justify='left',wraplength=950).pack(anchor='w')
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.update_states()
@@ -183,8 +188,25 @@ class Application(tk.Tk):
             field.pack(fill='x', pady=10)
             self.fields[key] = field
         self.fields['output'].value.set(str(Path('results').resolve()))
+        site = ttk.LabelFrame(inputs, text='Site displacements and signal delays (IERS Conventions 2010, ch. 7)', padding=12)
+        site.pack(fill='x', pady=(8, 4))
+        for key, label, types in (('ocean_loading', 'Ocean tide loading · BLQ (optional)', [('BLQ ocean loading', '*.blq *.BLQ'), ('All files', '*')]),
+                                  ('erp', 'Pole tide · Earth rotation parameters ERP (optional)', [('IGS ERP', '*.erp *.ERP *.erp.gz *.ERP.gz'), ('All files', '*')])):
+            field = FileField(site, label, initial=DATA_DIR, filetypes=types)
+            field.pack(fill='x', pady=4)
+            self.fields[key] = field
+        row = ttk.Frame(site); row.pack(fill='x', pady=(6, 2))
+        self.shapiro = LabeledValue(row, 'Shapiro (relativistic) delay', 'bool', True, hint='~2 cm, elevation dependent; IGS clocks assume it is applied')
+        self.shapiro.pack(fill='x')
+        self.satellite_pcv = LabeledValue(row, 'Satellite PCV (ANTEX, nadir)', 'bool', True, hint='needs the ANTEX file above; mm to cm per satellite')
+        self.satellite_pcv.pack(fill='x')
+        ttk.Label(site, wraplength=950, foreground=MUTED, justify='left', text=
+                  'Ocean loading: 11 constituents (M2 … Ssa) for the RINEX marker from a BLQ file of the Onsala loading service '
+                  '(holt.oso.chalmers.se/loading, model FES2014b, "displacement in CE frame"); up to several cm near coasts. '
+                  'Pole tide: IERS 2010 eq. 7.24 with the polar motion of an IGS ERP file (a few mm). The solid Earth tide is '
+                  'switched in Processing settings. Used by the EKF and PPP-AR solutions (not by the v2.0 baseline).').pack(anchor='w', pady=(6, 0))
         ttk.Button(inputs,text='Select files from the Data folder',command=self.load_example).pack(anchor='w',pady=16)
-        ttk.Label(inputs,text='Fill the Data folder with the required files before processing.\nThe button selects only the observation file, ANTEX, atmosphere products and the reference stations in Data/network.\nOrbit (SP3), clock (CLK), code-bias and AR products are chosen by you in Processing settings → Positioning technique:\nthe analysis centre you choose changes the solution and the convergence time, so it is never picked automatically.').pack(anchor='w')
+        ttk.Label(inputs,text='Fill the Data folder with the required files before processing.\nThe button selects only the observation file, ANTEX, BLQ, ERP, atmosphere products and the reference stations in Data/network.\nOrbit (SP3), clock (CLK), code-bias and AR products are chosen by you in Processing settings → Positioning technique:\nthe analysis centre you choose changes the solution and the convergence time, so it is never picked automatically.').pack(anchor='w')
 
     def row(self, rows, widget, **pack):
         """Register a widget for ordered show/hide; ``arrange`` re-packs the visible ones."""
@@ -235,12 +257,15 @@ class Application(tk.Tk):
                                   ('sp3_before', 'SP3 · previous day (optional)', orbit_types),
                                   ('sp3_after', 'SP3 · next day (optional)', orbit_types),
                                   ('clock_file', 'Clocks · RINEX CLK (optional)', clock_types),
+                                  ('attitude', 'Attitude · ORBEX quaternions (optional)', [('ORBEX attitude', '*.obx *.OBX *.obx.gz *.OBX.gz'), ('All files', '*')]),
                                   ('code_biases', 'Code biases · Bias-SINEX (optional)', bias_types)):
             self.fields[key] = self.row(self.rows[method], FileField(method, label, initial=DATA_DIR, filetypes=types), fill='x', pady=2)
         self.row(self.rows[method], ttk.Label(method, wraplength=950, foreground=MUTED, justify='left', text=
                  'Orbit and clock products are chosen by you (download them from the analysis centre, e.g. IGS, CODE, GFZ/GBM, CNES/GRG, WHU). '
                  'A 30 s / 5 s CLK replaces the 15 min SP3 clocks; with a single-day SP3 the previous/next day may stay empty. '
-                 'Code biases (DSB/OSB) shift C1C/C2L… codes to C1W/C2W (Banville et al. 2008).'), anchor='w', pady=(0,4))
+                 'The attitude file (*_ATT.OBX) of the same centre replaces the nominal yaw in the PCO and wind-up (eclipse and noon turns). '
+                 'Code biases (DSB/OSB) shift codes to the clock datum, GPS C1W/C2W and Galileo C1C/C5Q (Banville et al. 2008); '
+                 'not needed with OSB AR products, which carry every signal. The file headers (not only the names) are checked for the analysis centre.'), anchor='w', pady=(0,4))
         self.fields['ar_products'] = self.ar_field = self.row(self.rows[method], FileField(
             method, 'AR product (FCB / OSB / JSON)', initial=DATA_DIR/'fcb',
             filetypes=[('FCB / OSB / JSON AR products', '*.fcb *.FCB *.bia *.BIA *.bsx *.BSX *.json'), ('All files', '*')]),
@@ -304,7 +329,13 @@ class Application(tk.Tk):
         self.success_rate = self.row(rows, LabeledValue(ar, 'PAR success-rate threshold', 'float', 0.999, step=0.001, hint='subset success rate: exact IB (decorrelated) or IR bound for cascade'))
         self.ar_max_std = self.row(rows, LabeledValue(ar, 'Max. float σ (cycles)', 'float', 0.15, step=0.05, hint='ILS precision gate'))
         self.ar_min_epochs = self.row(rows, LabeledValue(ar, 'Minimum arc length (epochs)', 'int', 20))
+        self.ar_min_elevation = self.row(rows, LabeledValue(ar, 'AR elevation cut-off (deg)', 'float', 15.0, step=1, hint='candidates only (PRIDE: 15°)'))
+        self.ar_min_arc = self.row(rows, LabeledValue(ar, 'Minimum arc duration (s)', 'float', 900.0, step=60, hint='PRIDE: 15 min'))
+        self.ar_min_ambiguities = self.row(rows, LabeledValue(ar, 'Minimum ambiguities per fix', 'int', 4, hint='PRIDE: 4'))
+        self.ar_max_exclusions = self.row(rows, LabeledValue(ar, 'Satellite exclusions after a rejection', 'int', 2, hint='lowest Dong & Bock P0 first'))
         self.validation = self.row(rows, LabeledValue(ar, 'Acceptance test', 'choice', list(VALIDATION)[0], VALIDATION))
+        self.ar_failure_rate = self.row(rows, LabeledValue(ar, 'FFRT failure rate Pf', 'float', 0.001, step=0.001,
+                                                           hint='threshold μ(Pf, Q) simulated per epoch (Verhagen & Teunissen 2013)'))
         self.ar_ratio = self.row(rows, LabeledValue(ar, 'Ratio threshold', 'float', 3.0, step=0.5))
         self.ml_threshold = self.row(rows, LabeledValue(ar, 'ML correct-fix probability threshold', 'float', 0.99, step=0.01,
                                                         hint='calibrated probability; 0.99 ≈ at most 1 % wrong fixes'))
@@ -314,8 +345,20 @@ class Application(tk.Tk):
         self.validator_buttons = self.row(rows, ttk.Frame(ar), fill='x')
         ttk.Button(self.validator_buttons, text='Train validator (Monte Carlo) and save to Data/models', command=self.train_validator).pack(side='left')
         ttk.Label(self.validator_buttons, text=f'  If no file is selected, {DEFAULT_MODEL} is trained in memory on first use.', foreground=MUTED).pack(side='left')
+        self.ar_hold = self.row(rows, LabeledValue(ar, 'Fix-and-hold', 'bool', False,
+                                                   hint='integers fixed identically for N epochs constrain the float filter (PRIDE, RTKLIB)'))
+        self.ar_hold_epochs = self.row(rows, LabeledValue(ar, 'Hold after (epochs)', 'int', 10))
+        self.ar_fixability = self.row(rows, LabeledValue(ar, 'ML fixability (self-supervised)', 'bool', False,
+                                                         hint='float pass → hindsight labels → candidate order, gate and search trigger'))
+        diagnostic = self.row(rows, ttk.Frame(ar), fill='x', pady=(8, 0))
+        ttk.Button(diagnostic, text='Narrow-lane diagnostic', command=self.start_diagnostic).pack(side='left')
+        ttk.Label(diagnostic, wraplength=760, foreground=MUTED, justify='left', text=
+                  '  Holds the coordinates (reference above, else the converged float PPP), fixes nothing and reports how close the '
+                  'float N1 ambiguities are to integers, with and without the extra models. Uniform fractions = products from '
+                  'different centres or a model error; clustered fractions = the products are usable.').pack(side='left')
         self.integer_method.widget.bind('<<ComboboxSelected>>', lambda event: self.update_states())
         self.validation.widget.bind('<<ComboboxSelected>>', lambda event: self.update_states())
+        self.ar_hold.widget.configure(command=self.update_states)
 
         ml = self.ml_section = section('Machine learning — stochastic model')
         self.ml_weighting = self.row(self.rows[ml], LabeledValue(ml, 'ML stochastic model', 'bool', False, hint='GBRT: elevation, SNR, arc length → observation variance'))
@@ -347,6 +390,11 @@ class Application(tk.Tk):
         ttk.Button(buttons,text='Remove selected',command=self.remove_fcb).pack(side='left', padx=6)
         self.fcb_method = self.row(self.rows[extra], LabeledValue(extra, 'FCB estimator', 'choice', 'all', ['all', 'batch', 'ekf', 'ekf+ml']))
         self.fcb_interval = self.row(self.rows[extra], LabeledValue(extra, 'Narrow-lane block', 'float', 900.0, step=300, hint='s (15 min default)'))
+        self.fcb_hold = self.row(self.rows[extra], LabeledValue(extra, 'Hold station coordinates', 'bool', True,
+                                                                hint='second float pass at the daily coordinate (network practice)'))
+        self.fcb_min_contributors = self.row(self.rows[extra], LabeledValue(extra, 'Stations per satellite FCB', 'int', 0,
+                                                                            hint='0 = stations/10 (1…10); blocks seen by fewer stations are dropped'))
+        self.fcb_workers = self.row(self.rows[extra], LabeledValue(extra, 'Parallel processes', 'int', 0, hint='0 = number of CPUs (max 8); 100+ stations'))
         self.fcb_button = self.row(self.rows[extra], ttk.Button(extra, text='Estimate FCB', command=self.start_fcb), anchor='w', pady=(6,0))
 
     def build_output(self, output):
@@ -432,6 +480,10 @@ class Application(tk.Tk):
         hidden.add(self.ar_max_std if partial else self.success_rate)
         if 'ratio' not in validation:
             hidden.add(self.ar_ratio)
+        if 'ffrt' not in validation:
+            hidden.add(self.ar_failure_rate)
+        if not self.ar_hold.get():
+            hidden.add(self.ar_hold_epochs)
         if 'ml' not in validation:
             hidden |= {self.ml_threshold, self.fields['ml_validator'], self.ml_model, self.validator_buttons}
         self.arrange(self.sections, hidden)
@@ -475,7 +527,8 @@ class Application(tk.Tk):
             for path in network:
                 self.fcb.insert('end', str(require_data_file(path)))
             # Orbit, clock, code-bias and AR products are the user's choice (Positioning technique section).
-            for key in ('ionosphere', 'troposphere', 'antex'):
+            # Station / day files (not analysis-centre products): picked when exactly one is present.
+            for key in ('ionosphere', 'troposphere', 'antex', 'ocean_loading', 'erp'):
                 found = [p for p in files if product_kind(p.name) == key]
                 if len(found) == 1:
                     self.fields[key].value.set(str(require_data_file(found[0])))
@@ -520,6 +573,11 @@ class Application(tk.Tk):
             ar_success_rate=self.success_rate.get(), ar_validation=VALIDATION[self.validation.get()],
             tropo_mapping=self.mapping.get(), repair_clock_jumps=self.clock_jumps.get(), phase_windup=self.windup.get(), solid_tides=self.tides.get(), ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),
             ml_weighting=self.ml_weighting.get(), ml_threshold=self.ml_threshold.get(),
+            shapiro=self.shapiro.get(), satellite_pcv=self.satellite_pcv.get(), ar_failure_rate=self.ar_failure_rate.get(),
+            ar_min_ambiguities=self.ar_min_ambiguities.get(), ar_max_exclusions=self.ar_max_exclusions.get(),
+            ar_min_elevation=self.ar_min_elevation.get(), ar_min_arc=self.ar_min_arc.get(), ar_hold=self.ar_hold.get(),
+            ar_hold_epochs=self.ar_hold_epochs.get(), ar_fixability=self.ar_fixability.get(), fcb_hold_coordinates=self.fcb_hold.get(),
+            fcb_min_contributors=self.fcb_min_contributors.get(), fcb_workers=self.fcb_workers.get(),
             reference_xyz=tuple(float(v) for v in reference) if reference else None)
         config.validate()
         return config
@@ -577,6 +635,14 @@ class Application(tk.Tk):
             return ('fcb', estimate_fcb(config, stations, methods, config.fcb_interval, progress=progress))
         self.launch(job, 1)
 
+    def start_diagnostic(self):
+        if self.technique.get() == 'PPP':
+            messagebox.showerror('Narrow-lane diagnostic', 'Select a PPP-AR technique and an AR product first.'); return
+        def job(config, progress):
+            from gps_processing.processing.diagnostics import run_nl_diagnostic
+            return ('nl', run_nl_diagnostic(config, progress=progress))
+        self.launch(job, 2)
+
     def train_validator(self):
         if self.busy: return
         self.busy = True
@@ -615,10 +681,18 @@ class Application(tk.Tk):
                     messagebox.showinfo('ML validator', f'{event[1]}\n\nModel: {info["model"]}\nSamples: {info["samples"]} (+{info["calibration_samples"]} for calibration)\nCorrect-fix fraction (simulation): {info["correct_fraction"]:.3f}\nAccuracy on the calibration set: {info["training_accuracy"]:.3f}')
                 elif event[0]=='fcb':
                     summary = event[1]['summary']
-                    lines = [f'{m}: LOO RMS {self.fmt(e.get("loo_rms_cycles"))} cyc, within 0.15 cyc {self.fmt(100*e.get("loo_within_015", np.nan), 0)}%, NL fixed {self.fmt(100*e["nl_fixed_fraction"], 0)}%'
+                    lines = [f'{m}: LOO RMS {self.fmt(e.get("loo_rms_cycles"))} cyc, within 0.15 cyc {self.fmt(100*e.get("loo_within_015", np.nan), 0)}%'
                              for m, e in summary['methods'].items()]
+                    lines += [f'⚠ {w}' for w in summary.get('warnings', [])]
                     self.status.configure(text='FCB estimation finished')
                     messagebox.showinfo('FCB estimation', f'{event[1]["output"]}\n\nStations: {", ".join(summary["stations"])}\n' + '\n'.join(lines) + f'\n\nBest (leave-one-station-out): {summary["best_method"]}')
+                elif event[0]=='nl':
+                    report = event[1]
+                    lines = [f'{name}: {e.get("samples", 0)} samples, |fraction| median {self.fmt(e.get("median_abs_fraction"))} cyc, '
+                             f'within 0.15 cyc {self.fmt(100*e.get("within_015", np.nan), 0)} % (uniform: 30 %)\n   → {e.get("verdict", "")}'
+                             for name, e in report['variants'].items()]
+                    self.status.configure(text='Narrow-lane diagnostic finished')
+                    messagebox.showinfo('Narrow-lane diagnostic', f'{report["output"]}\nHeld coordinate: {report["reference_source"]}\n\n' + '\n\n'.join(lines))
                 elif event[0]=='done':
                     self.show_result(event[1], event[2])
                 else:

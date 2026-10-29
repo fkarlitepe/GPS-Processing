@@ -8,7 +8,7 @@ import numpy as np
 
 def _fit_tree(x, y, depth, min_leaf):
     if depth == 0 or len(y) < 2*min_leaf:
-        return {'value': float(y.mean())}
+        return {'value': float(y.mean()) if len(y) else 0.0}
     best = None
     total, count = y.sum(), len(y)
     for feature in range(x.shape[1]):

@@ -18,8 +18,11 @@ from .ar_validation import CANDIDATES, build_model
 FIXED_RULES = {
     'Ratio ≥ 3 (fixed)': lambda f: (np.exp(f[:, 0]) >= 3).astype(float),
     'Ps ≥ 0.999 + ratio ≥ 3 (fixed)': lambda f: ((sigmoid(f[:, 1]) >= 0.999) & (np.exp(f[:, 0]) >= 3)).astype(float),
+    'FFRT, Pf = 0.001 (model-based)': lambda f: (f[:, 9] >= 0).astype(float),
+    'FFRT + P0 ≥ 0.99 (Dong & Bock)': lambda f: ((f[:, 9] >= 0) & (sigmoid(f[:, 10]) >= 0.99)).astype(float),
 }
-CALIBRATED_SCORES = {'Ratio (FF-calibrated)': lambda f: f[:, 0], 'Success rate Ps (FF-calibrated)': lambda f: f[:, 1]}
+CALIBRATED_SCORES = {'Ratio (FF-calibrated)': lambda f: f[:, 0], 'Success rate Ps (FF-calibrated)': lambda f: f[:, 1],
+                     'P0 min (FF-calibrated)': lambda f: f[:, 10]}
 
 
 def sigmoid(v):

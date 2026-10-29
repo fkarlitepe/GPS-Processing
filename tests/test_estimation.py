@@ -191,8 +191,11 @@ class LearningTests(unittest.TestCase):
     def test_validator_probability_orders_quality_and_round_trips(self):
         from gps_processing.processing.ml.ar_validation import ARValidator
         validator = ARValidator.train(samples=1500, seed=1)
-        good = evaluate(np.array([1.01, 2.0, -0.98]), np.diag([1e-3]*3), 'lambda', 0.0)
-        bad = evaluate(np.array([1.45, 2.4, -0.6]), np.diag([0.3]*3), 'lambda', 0.0)
+        from gps_processing.processing.ml.ar_simulation import add_policy_features
+        # The solver adds the FFRT threshold, P0 and fraction features before asking the validator.
+        good_a, bad_a = np.array([1.01, 2.0, -0.98]), np.array([1.45, 2.4, -0.6])
+        good = add_policy_features(evaluate(good_a, np.diag([1e-3]*3), 'lambda', 0.0), good_a, np.diag([1e-3]*3))
+        bad = add_policy_features(evaluate(bad_a, np.diag([0.3]*3), 'lambda', 0.0), bad_a, np.diag([0.3]*3))
         self.assertGreater(validator.probability(good), 0.95)
         self.assertLess(validator.probability(bad), validator.probability(good))
         with tempfile.TemporaryDirectory() as directory:

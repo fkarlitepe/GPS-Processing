@@ -39,7 +39,23 @@ L_IF = ρ + c·dt_r − c·dt^s − δ_rel + ZHD·m_h(e) + ZWD·m_w(e) + A + ε_
 
 **Robust (IGG-III):** sonsal artıklar kendi kovaryansları `R − H P⁺ Hᵀ` ile standartlaştırılır; `|v| ≤ 2.5` tam ağırlık, `2.5 < |v| ≤ 6` azaltılmış ağırlık, `> 6` reddedilir. SDBS'de satırlar korele olduğundan ağırlık uydu bloğuna (kod+faz+MW) uygulanır.
 
-**Adaptif fading:** `T = vᵀS⁻¹v / m > 1.5` ise konum öncül kovaryansı `T/1.5` ile şişirilir. Kinematik veya ani değişimlerde yakınsamayı hızlandırır; modellenmemiş sistematik hatalar (ör. 15 dk SP3 saat enterpolasyonu) varken gereksiz şişirme yapıp sonucu kötüleştirebilir — aşağıdaki örnek sonuçta görüldüğü gibi.
+**Tek EKF çekirdeği (v2.9, `processing/engine.py`):** Float PPP ve üç PPP-AR kullanıcı modeli aynı döngüyü kullanır. Bu döngü şunları bir kez yapar: durum düzeni, yükseklik maskesi, öngörü, saat ve kayma sıfırlamaları, atmosfer gecikmeleri, uydu saat/relativite terimleri, robust/adaptif güncelleme. Gözlem modelleri eklentidir: `ppp_ekf.IonosphereFreeModel` (IF kod+faz) ve `ar.solver.UserModel` (IF kod, IF faz, MW; SDBS/DCM/IPC dönüşümü; güncellemeden sonra AR). Yeniden düzenleme v2.8 sonuçlarını bit düzeyinde aynen üretir (MADR, 4 saat; PPP, SDBS, DCM, IPC). DCM/IPC başlangıç epoklarındaki koşul sayısı o kadar kötüdür ki, gürültü matrisinin işlem sırası bile son basamaktaki farkları desimetrelere büyütebiliyor; vektörleştirilmiş kodda işlem sırası bu yüzden korunur.
+
+**Adaptif EKF (v2.9):**
+
+- *Gözlem grubuna göre varyans faktörleri:* kod / faz / MW × GPS / Galileo için ayrı faktör. İnovasyonlardan Mehra / Sage–Husa biçiminde kestirilir ve epoklar boyunca yumuşatılır. Alıcı saati (beyaz gürültü) bir grubun bütün satırlarında ortak olduğundan inovasyonlar grup içinde merkezlenir; bu, saati tam olarak yok eder. Yeni belirsizlikli satırlar dışarıda tutulur. Bu, Guo & Zhang (2014)'ün "gelecek çalışma" olarak bıraktığı çoklu uyarlamalı faktördür.
+  - Sonsal artıklarla yapılan ilk deneme filtreyi kendi çıktısına bağladı ve varyanslar alt sınıra çöktü (4 saatte 1 m). Bu yüzden kullanılmıyor.
+- *Fading* yalnız kinematik alıcıda ve yalnız anlamlı uyumsuzlukta (NIS > χ²₀.₉₉₉(m)/m) uygulanır. Statik konumda dinamik model hatası olmaz; eski sabit 1.5 eşiği MADR'da statik çözümü desimetrelerce kaydırıyordu.
+
+MADR 23.11.2023 (GPS+Galileo, GBM SP3/CLK, igs20) float PPP, 3B hata (m), referans aynı günün yakınsamış koordinatı:
+
+| | 15 dk | 30 dk | 60 dk | 4 sa | 8 sa | 23 sa |
+|---|---|---|---|---|---|---|
+| EKF | 0.090 | 0.186 | 0.023 | 0.025 | 0.017 | 0.012 |
+| Eski adaptif (sabit eşikli fading) | 0.067 | 0.223 | 0.024 | 0.286 | 0.901 | 0.584 |
+| v2.9 adaptif (grup faktörleri, statikte fading yok) | 0.066 | 0.166 | 0.024 | 0.022 | 0.023 | 0.022 |
+
+Grup faktörleri ilk yarım saati iyileştiriyor, sonrasında yaklaşık nötr (1 cm kötü). Fading'in statik moddan çıkarılması büyük hatayı gideriyor.
 
 ## 2. LAMBDA ve kısmi belirsizlik çözümü (PAR)
 
@@ -141,6 +157,24 @@ Yorum:
 
 Arayüzdeki **Train validator** düğmesi seçilen modeli 8000 örnekle eğitip `Data/models/ar_validator_<model>.joblib` olarak kaydeder. Dosya seçilmezse varsayılan model ilk kullanımda 4000 örnekle bellekte eğitilir (deterministik tohum, ~10 s). v2.1'deki JSON doğrulayıcılar eski öznitelik kümesini kullandığı için yeniden eğitilmelidir. Uydu yörünge ve saat enterpolasyonu değişmedi: 9. derece Lagrange.
 
+### 3.3 Bias'a duyarlı ML doğrulayıcı (v2.9)
+
+Doğrulayıcının öznitelikleri genişletildi. Artık FFRT eşiğine olan pay (log(ratio/μ)), sabitlenen kümedeki en küçük Dong–Bock P0 ve en büyük kesirli kısım da giriyor (`ml/ar_simulation.py`). Monte Carlo verisi kovaryans ölçek hatası ve modellenmemiş kesirli biaslar içerdiği için, formal testlerin göremediği biası bu öznitelikler yakalar. `ar_benchmark` aynı sabit hata oranında FFRT, FFRT+P0, kalibre P0 ve ML'yi karşılaştırır. Kayıtlı eski doğrulayıcılar farklı öznitelik kümesi nedeniyle reddedilir; yeniden eğitin.
+
+### 3.4 Kendi kendini eğiten çözülebilirlik modeli (v2.9, `ml/fixability.py`)
+
+1. AR filtresi önce tamsayı sabitlemeden çalıştırılır.
+2. Sonunda yakınsamış (σ < 0.05, kesir < 0.10) her yayın tamsayısı geriye dönük olarak bilinir.
+3. Bu yayın önceki her epoğu "şimdi yuvarlasam doğru olur muydu" sorusuyla etiketlenir.
+4. Yakınsadığı hâlde tamsayıya oturmayan yay (ürün/model hatası) "çözülemez" olarak etiketlenir.
+5. GBRT, gerçek zamanda bilinenlerden bu olasılığı öğrenir: σ, kesir, P0, yükseklik, yay uzunluğu ve aşama. Model uyduya göre çapraz eğitilir; hiçbir uydu kendi etiketini görmüş bir modelle puanlanmaz.
+
+İkinci geçişte bu olasılık adayları sıralar, eşiğin (0.5) altındakileri dışlar ve aramayı başlatır: en az `ar_min_ambiguities` aday çözülebilir görünmeden arama yapılmaz. Bu, PPP-ARISEN'in CSI-ZWDV yakınsama göstergesinin veriye dayalı karşılığıdır. Seçenek: `--ar-fixability` / arayüzde *ML fixability*.
+
+### 3.5 FCB EKF'sinde veriden öğrenilen süreç gürültüsü
+
+`ekf+ml` FCB kestiricisi ilk EKF geçişinden her uydunun UFO'sunun bloklar arası değişiminin dayanıklı (MAD) varyansını alır, formal varyansı çıkarır ve ikinci geçişte uyduya özgü rastgele yürüyüş gürültüsü olarak kullanır (sınırlar 0.002–0.2 çevrim/blok). Ge'nin 15 dakikalık tabloları ile Geng'in "günlük yeterli" sonucu arasında veri karar verir. 5 istasyonlu ağda bütün uydular alt sınırda kaldı (0.004 çevrim/√saat): bu günde UFO'lar kararlı.
+
 ## 4. Örnek veride elde edilen sonuçlar
 
 MADR, 23.11.2023, 30 s, **yalnız 25 epok (~12 dakika)**, IGS final SP3, 10° maske, referans: RINEX başlık koordinatı. Uyumlu AR ürünü olmadığından yalnız float PPP karşılaştırılabildi:
@@ -169,7 +203,7 @@ Yorum:
 
 ## 6. Sınırlar
 
-Anten PCO/PCV (ANTEX), phase wind-up, katı yer gelgiti, okyanus yüklemesi, DCB/OSB ve 30 s hassas saat ürünü yoktur; SP3 saatleri 15 dakikalık örneklerden doğrusal enterpolasyonla alınır. Bu nedenle faz artıkları birkaç santimetredir ve gerçek veride santimetre doğruluğu beklenmemelidir. ML bileşenleri araştırma aracıdır; sonuçlar bağımsız veriyle doğrulanmalıdır.
+Modeller v2.9 itibarıyla tamdır: ANTEX PCO/PCV, uydu PCV, ORBEX yönelim, wind-up, katı yer/okyanus/kutup gelgiti, Shapiro, OSB/FCB, 30 s saat. Dar şerit sonucu ise ürünlerin aynı merkezden gelmesine bağlıdır (docs/MODELS.md). ML bileşenleri araştırma aracıdır; yenilik iddiası öncesinde güncel literatür taranmalı ve sonuçlar bağımsız günlerle/istasyonlarla doğrulanmalıdır.
 
 ## Kaynaklar
 
