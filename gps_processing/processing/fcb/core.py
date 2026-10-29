@@ -17,8 +17,10 @@ and the optional features elevation, arc_epochs):
                blocks borrow strength from the previous ones.
 * ``ekf+ml`` - two passes of the EKF; between them a gradient-boosted regression, cross-fitted
                by station, learns the residual variance of each float ambiguity from its own
-               precision, elevation and arc length. The second pass uses these variances as
-               weights and leaves out ambiguities predicted to be unreliable.
+               precision, elevation and arc length, and the random-walk noise of every satellite
+               UFO is learned from the first pass (robust variance of its block-to-block changes).
+               The second pass uses these variances and leaves out ambiguities predicted to be
+               unreliable.
 """
 from dataclasses import dataclass, field
 import numpy as np
@@ -103,8 +105,11 @@ def _adjust_block(rows, datum, gate, iterations=10):
     x = np.array([receiver[s] for s in stations]+[satellite[s] for s in sats])
     accepted = np.zeros(len(rows), bool)
     covariance = np.full((len(x), len(x)), np.nan)
+    station_column = rows.station.map(lambda s: -1 if s == datum else column['r', s]).to_numpy(int)
+    sat_column = rows.sat.map(lambda s: column['s', s]).to_numpy(int)
+    prediction = lambda x: np.where(station_column >= 0, x[np.maximum(station_column, 0)], 0.0)+x[sat_column]
     for _ in range(iterations):
-        predicted = rows.station.map(lambda s: 0.0 if s == datum else x[column['r', s]]).to_numpy()+rows.sat.map(lambda s: x[column['s', s]]).to_numpy()
+        predicted = prediction(x)
         integers = np.rint(rows.value.to_numpy()-predicted)
         fraction = rows.value.to_numpy()-predicted-integers
         new = np.abs(fraction) < gate
@@ -112,10 +117,10 @@ def _adjust_block(rows, datum, gate, iterations=10):
             break
         design = np.zeros((new.sum(), len(x)))
         chosen = rows[new]
-        for k, (station, sat) in enumerate(zip(chosen.station, chosen.sat)):
-            if station != datum:
-                design[k, column['r', station]] = 1
-            design[k, column['s', sat]] = 1
+        k = np.arange(new.sum())
+        receiver_rows = station_column[new] >= 0
+        design[k[receiver_rows], station_column[new][receiver_rows]] = 1
+        design[k, sat_column[new]] = 1
         w = _weights(chosen)
         normal = design.T@(design*w[:, None])
         target = design.T@(w*(chosen.value.to_numpy()-integers[new]))
@@ -128,7 +133,7 @@ def _adjust_block(rows, datum, gate, iterations=10):
         x, accepted = solution, new
         if converged:
             break
-    predicted = rows.station.map(lambda s: 0.0 if s == datum else x[column['r', s]]).to_numpy()+rows.sat.map(lambda s: x[column['s', s]]).to_numpy()
+    predicted = prediction(x)
     rows['integer'] = np.rint(rows.value.to_numpy()-predicted)
     rows['residual'] = rows.value.to_numpy()-predicted-rows.integer.to_numpy()
     rows['fixed'] = np.abs(rows.residual.to_numpy()) < gate
@@ -159,14 +164,17 @@ def batch(table, gate=0.25, datum=None):
 
 
 def ekf(table, gate=0.25, satellite_noise=None, receiver_noise=None, datum=None, sigma=None, method='ekf'):
-    """Random-walk Kalman filter over blocks; ``*_noise`` in cycles^2/s, ``sigma`` overrides the
-    row standard deviations (ML pass)."""
+    """Random-walk Kalman filter over blocks; ``*_noise`` in cycles^2/s (``satellite_noise`` may be a
+    {sat: value} dict, the data-driven noise of ``ekf_ml``), ``sigma`` overrides the row standard
+    deviations (ML pass)."""
     datum = datum or _datum(table)
     table = table.copy()
     if sigma is not None:
         table['sigma'] = sigma
     span = float(np.median(np.diff(np.sort(table.epok.unique())))) if table.epok.nunique() > 1 else 900.0
-    satellite_noise = (0.01**2/span) if satellite_noise is None else satellite_noise
+    default = 0.01**2/span
+    per_satellite = satellite_noise if isinstance(satellite_noise, dict) else {}
+    satellite_noise = default if satellite_noise is None or isinstance(satellite_noise, dict) else satellite_noise
     receiver_noise = (0.02**2/span) if receiver_noise is None else receiver_noise
     stations = sorted(set(table.station))
     sats = sorted(set(table.sat))
@@ -175,7 +183,7 @@ def ekf(table, gate=0.25, satellite_noise=None, receiver_noise=None, datum=None,
     n = len(index)
     x, P = np.zeros(n), np.diag(np.full(n, np.inf))
     P[index['r', datum], index['r', datum]] = 0.0
-    noise = np.array([receiver_noise]*len(stations)+[satellite_noise]*len(sats))
+    noise = np.array([receiver_noise]*len(stations)+[per_satellite.get(j, satellite_noise) for j in sats])
     noise[index['r', datum]] = 0.0
     satellites, receivers, rows, previous = [], [], [], None
     for block, group in table.groupby('block', sort=True):
@@ -277,9 +285,32 @@ def ekf_ml(table, gate=0.25, reliable=0.2, **kw):
     # Rows not used in the first pass keep their own sigma; predicted-unreliable rows are dropped.
     learned = np.where(np.isfinite(learned), learned, merged.sigma.to_numpy(float))
     keep = learned < reliable
-    second = ekf(merged[keep].drop(columns='learned'), gate, sigma=learned[keep], method='ekf+ml', **kw)
-    second.info.update(ml_rows=int(len(rows)), ml_dropped=int((~keep).sum()), ml_median_sigma=float(np.median(sigma)))
+    noise = process_noise(first)
+    second = ekf(merged[keep].drop(columns='learned'), gate, sigma=learned[keep], method='ekf+ml',
+                 **{**kw, 'satellite_noise': noise or kw.get('satellite_noise')})
+    second.info.update(ml_rows=int(len(rows)), ml_dropped=int((~keep).sum()), ml_median_sigma=float(np.median(sigma)),
+                       learned_process_noise_cycles_per_sqrt_h={str(j): float(np.sqrt(q*3600)) for j, q in sorted(noise.items())})
     return second
+
+
+def process_noise(result, floor=0.002, ceiling=0.2):
+    """Data-driven random-walk variance (cycles^2/s) of every satellite UFO from the first EKF pass:
+    robust (MAD) variance of the block-to-block changes minus their formal variance, per second.
+    Satellites with fewer than 4 changes keep the default. Bounded to [floor, ceiling] cycles per
+    block so that one noisy block cannot freeze or free a satellite."""
+    out = {}
+    for sat, frame in result.satellite.groupby('sat'):
+        frame = frame.sort_values('epok')
+        if len(frame) < 5:
+            continue
+        change = wrap(np.diff(frame.ufo.to_numpy(float)))
+        dt = np.diff(frame.epok.to_numpy(float))
+        formal = frame.sigma.to_numpy(float)**2
+        spread = (1.4826*np.median(np.abs(change-np.median(change))))**2
+        step = float(np.median(dt))
+        variance = max(spread-float(np.median(formal[1:]+formal[:-1])), floor**2)
+        out[int(sat)] = min(variance, ceiling**2)/step
+    return out
 
 
 ESTIMATORS = {'batch': batch, 'ekf': ekf, 'ekf+ml': ekf_ml}
@@ -297,7 +328,8 @@ def user_residuals(result, rows):
     return the remaining fractions; blocks with fewer than 3 satellites are skipped."""
     out = []
     for block, group in rows.groupby('block'):
-        corrected = group.value.to_numpy(float)-np.array([result.lookup(int(j), np.array([e]))[0] for j, e in zip(group.sat, group.epok)])
+        corrected = group.value.to_numpy(float)-np.array([result.lookup(int(j), np.array([e]))[0]
+                                                         for j, e in zip(group.sat, group.epok)]) if len(group) else np.array([])
         ok = np.isfinite(corrected)
         if ok.sum() < 3:
             continue
@@ -306,10 +338,14 @@ def user_residuals(result, rows):
     return np.concatenate(out) if out else np.array([])
 
 
-def leave_one_out(table, method, gate=0.25, **kw):
-    """Estimate without each station in turn and test the UFOs on that station's ambiguities."""
+def leave_one_out(table, method, gate=0.25, max_stations=20, **kw):
+    """Estimate without each station in turn and test the UFOs on that station's ambiguities.
+    Large networks (100+ stations) validate an evenly spread subset of ``max_stations``."""
     rows = []
-    for station in sorted(set(table.station)):
+    stations = sorted(set(table.station))
+    if max_stations and len(stations) > max_stations:
+        stations = [stations[int(k)] for k in np.linspace(0, len(stations)-1, max_stations)]
+    for station in stations:
         rest = table[table.station != station]
         if rest.station.nunique() < 2:
             continue

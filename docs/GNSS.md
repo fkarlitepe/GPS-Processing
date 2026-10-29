@@ -18,7 +18,7 @@ Uydu sistemleri çözümden önce seçilir: arayüzde *Positioning technique →
 - **Float PPP (EKF):** GPS saati + ayrı Galileo alıcı saati (beyaz gürültü; GPS–Galileo zaman farkı ve sistemler arası kod biası buna girer). Belirsizlik durumları 68 yuva (G01–G32, E01–E36). Gürültü, IF katsayısı ve ikinci derece iyonosfer sistemin frekanslarıyla hesaplanır.
 - **PPP-AR:** Her sistemin kendi referans uydusu (datum) vardır. SDBS sistem içinde fark alır; DCM'de üç, IPC'de iki alıcı saati/biası sistem başına ayrıdır; IPC WL çözücüsü sistem başına ayrı alıcı WL biası kullanır. WL ve N1 adayları sistem içi fark olduğundan iki sistemin tamsayıları birlikte aranır. Referans değişiminde tamsayı kaydırma yalnız o sistemin belirsizliklerine uygulanır.
 - **Anten ve wind-up:** ANTEX'te Galileo uyduları E01/E05 frekanslarıyla okunur. Alıcı kalibrasyonunda Galileo frekansı yoksa IGS alışkanlığıyla GPS değerleri kullanılır (E1 → G01, E5a → G02). Wind-up IF fazda sistemin λ_N değeriyle uygulanır.
-- **Kod biası hizalaması (Bias-SINEX):** Yalnız GPS (C1C/C2L… → C1W/C2W). Galileo kodları olduğu gibi kalır; saat ürünleri merkezden merkeze C1X/C5X veya C1C/C5Q kullanır.
+- **Kod biası hizalaması (Bias-SINEX, v2.9):** GPS → C1W/C2W, Galileo → C1C/C5Q (MGEX saat datumu). DSB'si dosyada olmayan satırlar olduğu gibi kalır. OSB AR ürünlerinde hizalama yapılmaz: OSB her izlenen sinyalin (C1X, C5X…) kendi kod biasını taşır.
 - **Sıralı LS (v2.0):** Yalnız GPS; Galileo seçiliyken bu kestirici reddedilir, karşılaştırmada temel çözüm GPS ile çalışır.
 
 ## Girdi kontrolleri

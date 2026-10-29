@@ -72,10 +72,10 @@ class WorkflowTests(unittest.TestCase):
     def test_estimated_fcb_file_makes_user_ambiguities_integer(self):
         frames = station_frames()
         with tempfile.TemporaryDirectory() as directory:
-            config = SimpleNamespace(output=directory, sp3_day='x.sp3', clock_file='')
+            config = SimpleNamespace(output=directory, sp3_day='x.sp3', clock_file='', fcb_workers=1)
             calls = iter(frames)
             with mock.patch.object(network, 'validate_stations', return_value=[Path(f'{n}.rnx') for n, _ in frames]), \
-                 mock.patch.object(network, 'station_ambiguities', side_effect=lambda c, p: (*(lambda f: (f[0], DAY, f[1]))(next(calls)),)):
+                 mock.patch.object(network, 'station_ambiguities', side_effect=lambda c, p: (*(lambda f: (f[0], DAY, f[1], np.zeros(3)))(next(calls)),)):
                 out = network.estimate_fcb(config, [], methods=('ekf',), interval=900.0, validate=False)
             products = FCBProducts(Path(directory)/'fcb'/'fcb_ekf.fcb', 'SDBS', DAY)
             self.assertIn('ekf', out['summary']['methods'])
@@ -95,10 +95,10 @@ class WorkflowTests(unittest.TestCase):
         from gps_processing import gnss
         frames = station_frames(seed=7, system='E')
         with tempfile.TemporaryDirectory() as directory:
-            config = SimpleNamespace(output=directory, sp3_day='x.sp3', clock_file='', systems=('G', 'E'))
+            config = SimpleNamespace(output=directory, sp3_day='x.sp3', clock_file='', systems=('G', 'E'), fcb_workers=1)
             calls = iter(frames)
             with mock.patch.object(network, 'validate_stations', return_value=[Path(f'{n}.rnx') for n, _ in frames]), \
-                 mock.patch.object(network, 'station_ambiguities', side_effect=lambda c, p: (*(lambda f: (f[0], DAY, f[1]))(next(calls)),)):
+                 mock.patch.object(network, 'station_ambiguities', side_effect=lambda c, p: (*(lambda f: (f[0], DAY, f[1], np.zeros(3)))(next(calls)),)):
                 out = network.estimate_fcb(config, [], methods=('ekf',), interval=900.0, validate=False)
             self.assertEqual(out['summary']['systems']['G']['stations'], 0)     # no GPS: skipped, not an error
             text = (Path(directory)/'fcb'/'fcb_ekf.fcb').read_text()

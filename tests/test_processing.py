@@ -7,7 +7,7 @@ from gps_processing.constants import C, F1, F2
 from gps_processing.processing.combinations import ionosphere_free, melbourne_wubbena
 from gps_processing.processing.orbit import interpolate
 from gps_processing.processing.geometry import elevation
-from gps_processing.processing.ppp import solve
+from gps_processing.legacy.sequential import solve
 from gps_processing.io.rinex import read_rinex
 from gps_processing.io.sp3 import combine_sp3, read_sp3
 from gps_processing.models import ProcessingConfig

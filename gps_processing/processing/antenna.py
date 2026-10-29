@@ -3,7 +3,9 @@
 Integer-clock (OSB) products are estimated with the IGS ANTEX satellite offsets and with the
 phase wind-up applied (Wu et al. 1993), so both must be applied by the user as well; an
 unmodelled differential wind-up is a fraction of a narrow-lane cycle and prevents N1 fixing.
-Satellite attitude is the nominal yaw (no eclipse/noon-turn models); formulas follow RTKLIB.
+Satellite attitude is the nominal yaw unless an ORBEX attitude file (io.orbex) is given, whose
+quaternions replace it wherever they cover the observation (eclipse and noon turns included).
+The satellite PCV (nadir dependent, ANTEX NOAZI) is applied with the PCO; formulas follow RTKLIB.
 """
 from datetime import datetime
 import numpy as np
@@ -64,15 +66,14 @@ def windup(los, ex, ey, receiver_xyz):
 
 
 def unwrap(sats, epochs, phase):
-    """Continuous wind-up per satellite: phw = ph + floor(previous - ph + 0.5) (RTKLIB)."""
+    """Continuous wind-up per satellite: phw = ph + floor(previous - ph + 0.5) (RTKLIB), starting
+    from previous = 0; vectorized as a period-1 unwrap of each satellite's series."""
     out = phase.copy()
     for sat in np.unique(sats):
         rows = np.flatnonzero(sats == sat)
-        rows = rows[np.argsort(epochs[rows])]
-        previous = 0.0
-        for i in rows:
-            out[i] = phase[i]+np.floor(previous-phase[i]+0.5)
-            previous = out[i]
+        rows = rows[np.argsort(epochs[rows], kind='stable')]
+        series = np.unwrap(phase[rows], period=1.0)
+        out[rows] = series+np.floor(-series[0]+0.5)
     return out
 
 
@@ -98,15 +99,45 @@ def receiver_correction(antenna, delta_hen, los, receiver_xyz, system='G'):
     return ionosphere_free, mw
 
 
+def satellite_pcv(antennas, combined, los, xyz, date):
+    """IF and MW satellite PCV (m) per row from the nadir angle (ANTEX NOAZI, nadir grid)."""
+    from gps_processing.io.antex import satellite_antenna
+    ionosphere_free, mw = np.zeros(len(combined)), np.zeros(len(combined))
+    nadir = np.degrees(np.arccos(np.clip(np.sum(-xyz/np.linalg.norm(xyz, axis=1)[:, None]*los, axis=1), -1, 1)))
+    sats = combined.sat.to_numpy()
+    for sat in np.unique(sats):
+        item = satellite_antenna(antennas, int(sat), date)
+        system = gnss.system_of(sat)
+        one, two = ANTEX_FREQUENCIES[system]
+        if item.zenith is None or one not in item.pcv:
+            continue
+        rows = sats == sat
+        d1 = np.interp(nadir[rows], item.zenith, item.pcv[one])
+        d2 = np.interp(nadir[rows], item.zenith, item.pcv.get(two, item.pcv[one]))
+        k = gnss.constants(system)
+        ionosphere_free[rows] = k['if1']*d1+k['if2']*d2
+        mw[rows] = (k['f1']*d1-k['f2']*d2)/(k['f1']-k['f2'])-(k['f1']*d1+k['f2']*d2)/(k['f1']+k['f2'])
+    return ionosphere_free, mw
+
+
 def apply_antenna_models(combined, satellites, receiver_xyz, date, antennas=None, receiver_type='',
-                         delta_hen=(0.0, 0.0, 0.0), phase_windup=True):
-    """Return (combined, satellites, info). ``antennas`` from io.antex.read_antex (None: wind-up only)."""
+                         delta_hen=(0.0, 0.0, 0.0), phase_windup=True, attitude=None, pcv=True):
+    """Return (combined, satellites, info). ``antennas`` from io.antex.read_antex (None: wind-up only),
+    ``attitude`` from io.orbex.read_orbex (None: nominal yaw)."""
     from gps_processing.io.antex import satellite_antenna
     combined, satellites = combined.copy(), satellites.copy()
     receiver_xyz = np.asarray(receiver_xyz, float)
     xyz = satellites[['x', 'y', 'z']].to_numpy(float)
     ex, ey, ez = nominal_axes(xyz, sun_position(satellites.epok.to_numpy(), date))
     info = dict(phase_windup=bool(phase_windup), satellite_pco=False, receiver_antenna='')
+    if attitude is not None:
+        from gps_processing.io.orbex import axes
+        ax, ay, az, covered = axes(attitude, satellites.sat.to_numpy(), satellites.epok.to_numpy(float))
+        ex[covered], ey[covered], ez[covered] = ax[covered], ay[covered], az[covered]
+        yaw_change = np.degrees(np.arccos(np.clip(np.sum(ax[covered]*nominal_axes(xyz[covered], sun_position(
+            satellites.epok.to_numpy()[covered], date))[0], axis=1), -1, 1)))
+        info.update(attitude=f'ORBEX quaternions ({covered.mean():.0%} of satellite epochs, nominal yaw elsewhere)',
+                    attitude_off_nominal_epochs=int((yaw_change > 5).sum()))
     if antennas is not None:
         offsets = np.zeros_like(xyz)
         for sat in satellites.sat.unique():
@@ -126,6 +157,12 @@ def apply_antenna_models(combined, satellites, receiver_xyz, date, antennas=None
     rows = merged.row.to_numpy(int)
     los = receiver_xyz-xyz[rows]
     los /= np.linalg.norm(los, axis=1)[:, None]
+    if antennas is not None and pcv:
+        pcv, pcv_mw = satellite_pcv(antennas, combined, los, xyz[rows], date)
+        combined['Pc'] -= pcv
+        combined['Lc'] -= pcv
+        combined['A4'] -= pcv_mw
+        info['satellite_pcv'] = True
     cycles = unwrap(combined.sat.to_numpy(), combined.epok.to_numpy(float), windup(los, ex[rows], ey[rows], receiver_xyz))
     if phase_windup:
         combined['windup_cycles'] = cycles

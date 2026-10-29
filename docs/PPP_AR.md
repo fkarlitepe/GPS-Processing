@@ -112,7 +112,7 @@ Kontroller ve değişiklikler (`processing/ar/solver.py`, `processing/ar/ipc.py`
 
 Banville, Santerre, Cocard & Langley (2008) iki şeyi gösterir: (1) kod biasları hem MW geniş şeridine hem de IF uydu saatleri üzerinden IF belirsizliklerine girer (denk. 9–12), bu yüzden kullanıcının kodu ürünün üretildiği kodla aynı olmalıdır; (2) alıcı saat atlamasında bütün uyduların kesirli belirsizlikleri birlikte sıçrar. Yazılımda karşılıkları:
 
-- **Kod biası hizalaması** (`gps_processing/io/bias_sinex.py`, `--code-biases`): Bias-SINEX 1.00 dosyasındaki uydu DSB/OSB değerleri okunur (ters yönlü DSB ve OSB çiftleri de kullanılır, alıcı satırları atlanır). C1W/C2W dışındaki kodlar (C1C, C1X, C2L, C2X…) `C − DSB(C, CW)` ile W eşdeğerine çevrilir; Pc, A4 ve yayım zamanı kodu doğrusal olduğu için doğrudan düzeltilir. Faz değiştirilmez: IGS kuralında bir frekansın uydu faz biası izleme modundan bağımsızdır, alıcı tarafındaki farklar tüm uydular için ortaktır. AR ürün kontrolü hizalanmış satırlarda kodun tam, fazın yalnız frekans olarak eşleşmesini ister. DSB'si olmayan satırlar hizalanmaz ve AR ürün kontrolünde reddedilir.
+- **Kod biası hizalaması** (`gps_processing/io/bias_sinex.py`, `--code-biases`): Bias-SINEX 1.00 dosyasındaki uydu DSB/OSB değerleri okunur (ters yönlü DSB ve OSB çiftleri de kullanılır, alıcı satırları atlanır). C1W/C2W dışındaki kodlar (C1C, C1X, C2L, C2X…) `C − DSB(C, CW)` ile W eşdeğerine çevrilir; Pc, A4 ve yayım zamanı kodu doğrusal olduğu için doğrudan düzeltilir. Faz değiştirilmez: IGS kuralında bir frekansın uydu faz biası izleme modundan bağımsızdır, alıcı tarafındaki farklar tüm uydular için ortaktır. AR ürün kontrolü hizalanmış satırlarda kodun tam, fazın yalnız frekans olarak eşleşmesini ister. DSB'si olmayan satırlar hizalanmaz ve AR ürün kontrolünde reddedilir. v2.9: Galileo kodları C1C/C5Q'ya hizalanır; OSB ürünleriyle hizalama atlanır (her sinyalin kendi OSB'si kullanılır).
 - **Saat sıçraması onarımı** (`gps_processing/processing/clock_jump.py`, varsayılan açık, `--no-clock-jump-repair`): Ardışık epoklarda kesintisiz uydular için Δ(Pc − Lc) hesaplanır. Medyan 1 ms'nin tam katına yuvarlanır; uyduların en az %80'i bu değere 30 m içinde uyuyorsa sıçrama kabul edilir ve tam `k·c·1 ms` değeri o epoktan sonra Lc ve A4'e eklenir. Kod ve zaman etiketi değişmez, GF etkilenmez. Bulunan sıçramalar `summary.json` → `settings.clock_jumps` alanına yazılır. Sentetik testte onarımsız DCM çözümü sıçramada bütün arc'ları yeniden başlatıp `ar_min_epochs − 1` epok float kalıyor; onarımlı çözüm fix'i koruyor.
 
 ## Gerçek AR ürünleri: saat, OSB, FCB ve anten modelleri (v2.6)
@@ -138,8 +138,41 @@ AR çözücüsünde uydu saati terimi yoktur; JSON ürün sözleşmesinde `code_
 
 ## Katı yer gelgiti (v2.7)
 
-`processing/tides.py`: IERS 2010 denk. 7.5, derece 2 (h2 = 0.6078, l2 = 0.0847), Ay (Montenbruck & Gill düşük duyarlıklı seri) ve Güneş; kalıcı kısım dahil, yani IGS'in gelgitsiz (tide-free) koordinat sistemi. Radyal etki Madrid'de ±17 cm, ekvatorda +27/−11 cm. EKF ve AR çözümlerinde varsayılan açık (`--no-solid-tides`); sıralı v2.0 temel çözümü değişmez. Okyanus yüklemesi uygulanmaz.
+`processing/tides.py`: IERS 2010 denk. 7.5, derece 2 (h2 = 0.6078, l2 = 0.0847), Ay (Montenbruck & Gill düşük duyarlıklı seri) ve Güneş; kalıcı kısım dahil, yani IGS'in gelgitsiz (tide-free) koordinat sistemi. Radyal etki Madrid'de ±17 cm, ekvatorda +27/−11 cm. EKF ve AR çözümlerinde varsayılan açık (`--no-solid-tides`); sıralı v2.0 temel çözümü değişmez. Okyanus yüklemesi, kutup gelgiti, Shapiro, uydu PCV ve ORBEX yönelimi için docs/MODELS.md.
+
+## AR politikası (v2.9, `processing/ar/policy.py`)
+
+Her aşama (önce WL, sonra N1) aynı sırayla işler:
+
+1. **Yay kapıları (çözücü):** yay en az `ar_min_epochs` epok ve `ar_min_arc` = 15 dk uzunlukta olmalı; AR adayları için yükseklik ≥ 15° (float filtre `elevation_mask` kullanır). Referans uydu ve ürünün kapsadığı uydular da şart.
+2. **Aday kapıları (PRIDE):** kesirli kısım WL < 0.20, N1 < 0.15 çevrim; marjinal σ < 0.25 çevrim (`--no-ar-candidate-gates` ile kapanır).
+3. **Sıralama:** Dong & Bock P0 (Ge et al. 2005), eşitlikte σ. ML çözülebilirlik modeli seçiliyse onun olasılığı (docs/EKF_ML.md §3.4).
+4. **Tamsayı kestirimi:** LAMBDA/bootstrapping + PAR (bootstrapped başarı oranı ≥ `ar_success_rate`).
+5. **Tek kabul kararı** (`--ar-validation`):
+   - `ffrt` (varsayılan): sabitlenen alt kümenin IB başarı oranı ≥ 1 − Pf ise kabul. Değilse ratio ≥ μ(Pf, Q) olmalıdır. μ her epokta Q'dan simüle edilir: 3000 örnek, bootstrapping ile en iyi tamsayı, en iyi birim komşu ikinci aday olarak (Verhagen & Teunissen 2013; Pf = 0.001).
+   - `ratio`: v2.8 kuralı (başarı oranı kapısı + sabit ratio 3).
+   - `ml`, `ffrt+ml`, `ratio+ml`.
+6. **Uydu dışlama:** reddedilirse en düşük P0'lı aday çıkarılır ve aşama tekrarlanır. En fazla `ar_max_exclusions` = 2 kez ve en az `ar_min_ambiguities` = 4 aday kaldıkça (Verhagen et al. 2011; PRIDE).
+7. **Bütünlük kontrolü:** sabit çözümün normalleştirilmiş artığı ≤ 9. Bu, tamsayıların kabul testi değil, model kontrolüdür.
+8. **Fix-and-hold** (`--ar-hold`, varsayılan kapalı): `ar_hold_epochs` epok boyunca aynı kalan tamsayılar float filtreye σ = 0.001 çevrimlik kısıt olarak geri verilir. Referans değişiminde bırakılır.
+
+Ürünün kapsamadığı uydular (ör. ağ FCB'sinde boşluklar) atılmaz: float çözüme katkı verir, AR adayı ve referans olmaz. Kapsam değişince yayları yeniden başlatılır.
+
+### MADR, 24 saat, GPS, GBM SP3/CLK + ağ FCB'si (zayıf NL ürünü)
+
+Referans: aynı günün yakınsamış float koordinatı. ">10 cm" sütunu yanlış fix için kaba bir göstergedir.
+
+| Politika | Fix oranı | Fixed epoklarda >10 cm | Fixed medyan 3B | Son saat RMS |
+|---|---|---|---|---|
+| v2.8 (ratio 3 + başarı oranı) | %0.6 | %100 | 0.151 m | 0.070 m |
+| v2.9 varsayılan (kapılar, P0, FFRT, dışlama) | %1.5 | %0 | 0.042 m | 0.070 m |
+| v2.9 + ML çözülebilirlik | %0 (tetik beklemede) | — | — | 0.070 m |
+| v2.9 + fix-and-hold | %1.3 | %0 | 0.041 m | 0.051 m |
+
+Zayıf ürünle v2.8 kuralının kabul ettiği fix'lerin hepsi yanlış. v2.9 politikası yanlış fix'i sıfıra indiriyor. ML modeli bu üründe N1'in çözülemeyeceğini öğrenip hiç aramıyor; doğru davranış bu, ama tutarlı bir ürün setiyle yeniden sınanmalı.
 
 ## Mevcut sınırlar ve sonraki bilimsel adımlar
 
-Troposfer kestirimi, ANTEX, phase wind-up, relativistik düzeltmeler, yüklemeler ve gerçek hassas saat/bias sağlayıcı adaptörleri bu değişiklikte tamamlanmadı. Yörünge yayım zamanı hâlâ SP3 saatiyle hesaplanır. Bu nedenle gerçek veride elde edilen herhangi bir `partial_fixed` etiketi jeodezik doğruluk kanıtı değildir. Uzun süreli gerçek gözlemler, bağımsız istasyon koordinatları ve uyumlu ürünlerle dış doğrulama gerekir. Ağ FCB kestirimi, IPC/OSB yöntemi ve FFRT için ayrı sonraki modüller planlanabilir; şu an seçenek olarak tamamlanmış gösterilmezler.
+- Modeller tamamlandı (ANTEX, wind-up, ORBEX yönelim, gelgitler, Shapiro, 30 s saat, OSB/FCB).
+- Dar şerit başarısı ürün setinin tutarlılığına bağlıdır. Data/fcb/post_2023327 setinde faz biasları CNES'in, saatler GFZ'nindir; NL teşhisi düzgün dağılım verir (docs/MODELS.md). Aynı merkezin tam seti indirilmeden gerçek veride NL fix'i beklenmemelidir.
+- Bir `partial_fixed` etiketi tek başına jeodezik doğruluk kanıtı değildir. Bağımsız istasyon koordinatlarıyla (IGS SINEX) dış doğrulama gerekir.

@@ -53,6 +53,23 @@ class Clocks:
         w = (epoch-t[k-1])/(t[k]-t[k-1])
         return (1-w)*value[k-1]+w*value[k]
 
+    def values(self, sat, epochs):
+        """Vectorized ``__call__``: NaN where an epoch is outside the file or inside a gap."""
+        epochs = np.asarray(epochs, float)
+        out = np.full(len(epochs), np.nan)
+        if sat not in self.groups or not len(epochs):
+            return out
+        t, value = self.groups[sat]
+        k = np.searchsorted(t, epochs)
+        exact = (k < len(t)) & (np.abs(t[np.minimum(k, len(t)-1)]-epochs) < 1e-6)
+        out[exact] = value[k[exact]]
+        inner = ~exact & (k > 0) & (k < len(t))
+        lo, hi = k[inner]-1, k[inner]
+        good = t[hi]-t[lo] <= self.max_gap
+        w = (epochs[inner]-t[lo])/(t[hi]-t[lo])
+        out[np.flatnonzero(inner)[good]] = ((1-w)*value[lo]+w*value[hi])[good]
+        return out
+
     def covers(self, sat, epoch):
         try:
             self(sat, epoch)

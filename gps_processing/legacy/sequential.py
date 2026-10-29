@@ -1,4 +1,5 @@
-"""Sequential float code/phase estimator, receiver clock and per-satellite ambiguities."""
+"""v2.0 baseline (frozen): sequential float code/phase estimator, receiver clock and per-satellite
+ambiguities, GPS only. Kept unchanged for regression tests and the method comparison."""
 import numpy as np
 import pandas as pd
 from gps_processing.constants import C

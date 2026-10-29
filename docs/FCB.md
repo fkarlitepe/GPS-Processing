@@ -52,6 +52,15 @@ python3 -m gps_processing --sp3-day Data/fcb/post_2023327/GBM0MGXRAP_20233270000
 
 Arayüzde: *Processing settings → FCB estimation from a reference network*, istasyonları ekleyip **Estimate FCB**.
 
+## Büyük ağlar (v2.9)
+
+- **Paralel istasyonlar:** her istasyon ayrı süreçte işlenir (`--fcb-workers`, varsayılan CPU sayısı, en fazla 8; süreç başına tek BLAS iş parçacığı). Yörünge/saat enterpolasyonu vektörleştirildi (~70× hızlı). 5 istasyon × 2 geçiş: 1 dk 49 s.
+- **Koordinat sabitleme** (`fcb_hold_coordinates`, varsayılan açık): önce float PPP günlük koordinatı verir, ikinci geçiş bu koordinatı sabit tutar (ağ çözümlerindeki gibi).
+- **Katkıda bulunan istasyon sayısı:** bir bloğun uydu FCB'si en az `--fcb-min-contributors` istasyondan gelmelidir. Varsayılan 0 = istasyon sayısı/10, [1, 10] aralığında (5 istasyon: filtre yok; 100 istasyon: 10, Geng et al. 2012). 5 seyrek küresel istasyonda 3'lük filtre gün boyunca yalnız 37 FCB bırakıyordu.
+- **LOO doğrulaması** büyük ağlarda eşit aralıklı 20 istasyonla sınırlıdır.
+- **Uyarılar** (`summary.json` → `warnings`): 10'dan az istasyon; kullanıcıya 2000 km içinde 10'dan az istasyon (Li & Zhang 2012).
+- **`ekf+ml`:** uyduya özgü süreç gürültüsünü ilk geçişten öğrenir (docs/EKF_ML.md §3.5).
+
 ## Sınırlar
 
 - NL FCB'leri yalnız kestirimde kullanılan yörünge/saat ürünüyle geçerlidir; dosya başlığında hangi ürün kullanıldığı yazılır.
@@ -61,5 +70,5 @@ Arayüzde: *Processing settings → FCB estimation from a reference network*, is
   - NL: dışarıda bırakılan istasyonda RMS 0.22–0.23 çevrim (rastgele: 0.29), 0.15 altı %49–51. EKF+ML en iyi (0.217) ama fark küçük; NL FCB'leri zayıf.
   - NOVM'de 245 kısa WL arc'ı var (diğerlerinde ~55): sık arc kesilmesi yüzünden NL'ye hiç girmedi. Ağ fiilen 4 istasyon ve kıtalara dağınık; aynı uyduyu aynı blokta gören istasyon sayısı az.
   - MADR PPP-AR/SDBS bu FCB'lerle: FCB'si olmayan uydular atıldığı için 1306 epokta 5'ten az uydu kaldı; fix oranı %1.5.
-- **Asıl darboğaz kullanıcı tarafı NL:** Tutarlı GBM OSB ürünüyle bile MADR'da 2 saatten uzun arc'larda SD N1 float kesirlerinin medyanı 0.17 çevrim (WL'de 0.0); fix oranı %1.7, retler çoğunlukla N1 ratio testinden. IF fazda hâlâ ~1–2 cm düzeyinde modellenmemiş bir etki var (adaylar: tutulma dönemi yönelimi/OBX, okyanus yüklemesi, Shapiro, uydu PCV, stokastik model). Bu çözülmeden ağdan NL FCB kestirimi de iyileşmez.
+- **Kullanıcı tarafı NL (düzeltildi, v2.9):** v2.8'de "tutarlı GBM OSB" sanılan `GBM0MGXRAP_…_ABS.BIA` dosyasının başlığı CNES'tir; GFZ saatleriyle kullanılamaz. NL teşhisi bu karışımda kesirlerin düzgün dağıldığını gösterdi; model eklemeleri sonucu değiştirmedi (docs/MODELS.md). Ürün denetimi artık dosya başlığına bakıyor.
 - Float PPP'de MADR son konumu RINEX başlığına göre D 0.42 / K 0.34 / Y −0.05 m farklı. Yön ve oran Avrasya levha hareketine uyuyor (başlık koordinatı yaklaşık 20 yıllık olabilir); bağımsız bir IGS SINEX koordinatıyla doğrulanmadı.
