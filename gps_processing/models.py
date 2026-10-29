@@ -133,3 +133,4 @@ class ProcessingResult:
     statistics: dict = field(default_factory=dict)
     ml_models: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
+    output_dir: Path = None      # this process's own folder: <output>/<year>_<doy>_<HHMMSS>

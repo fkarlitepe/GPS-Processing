@@ -15,3 +15,6 @@ togu-gps-gui = "gps_processing.ui.app:main"
 
 [tool.setuptools.packages.find]
 include = ["gps_processing*"]
+
+[tool.setuptools.package-data]
+gps_processing = ["ui/assets/*.jpg"]

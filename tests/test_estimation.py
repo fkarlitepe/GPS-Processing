@@ -256,8 +256,10 @@ class AnalysisAndPipelineTests(unittest.TestCase):
                                    reference_xyz=tuple(RECEIVER))
             table, results = compare(cfg, ['Sequential LS (v2.0)', 'EKF', 'EKF + ML weighting', 'AR · LAMBDA + PAR'])
             self.assertEqual(list(table.solution), ['Sequential LS (v2.0)', 'EKF', 'EKF + ML weighting'])
-            self.assertTrue((Path(directory)/'comparison'/'statistics.csv').is_file())
-            self.assertTrue((Path(directory)/'comparison'/'ekf_ml_weighting'/'ml_models.json').is_file())
+            folder = table.attrs['output']                      # <output>/<year>_<doy>_<HHMMSS>
+            self.assertEqual(folder.parent, Path(directory))
+            self.assertTrue((folder/'comparison'/'statistics.csv').is_file())
+            self.assertTrue((folder/'comparison'/'ekf_ml_weighting'/'ml_models.json').is_file())
             self.assertLess(table.set_index('solution').loc['EKF', 'final_3d'], table.set_index('solution').loc['Sequential LS (v2.0)', 'final_3d'])
 
 

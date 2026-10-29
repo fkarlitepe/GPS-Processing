@@ -67,8 +67,10 @@ def main():
         if stations and (not args.rinex or args.technique == 'PPP'):
             from gps_processing.processing.fcb.network import estimate_fcb
             from gps_processing.processing.fcb.core import METHODS
+            from gps_processing.pipeline import run_directory
             config = ProcessingConfig(**{**vars(args), 'rinex': stations[0]})
             config.validate()
+            config.output = run_directory(config.output)
             out = estimate_fcb(config, stations, METHODS if args.fcb_method == 'all' else (args.fcb_method,), args.fcb_interval, progress=progress)
             for method, entry in out['summary']['methods'].items():
                 print(method, {k: round(v, 4) if isinstance(v, float) else v for k, v in entry.items()})

@@ -220,9 +220,25 @@ def network_products(config, progress):
     return replace(config, ar_products=str(path)), dict(out['summary'], product=str(path))
 
 
+def run_directory(base, now=None):
+    """New folder per process under ``base``: <year>_<day of year>_<HHMMSS> of the start time
+    (e.g. results/2026_302_143512); a suffix keeps two runs in the same second apart."""
+    from datetime import datetime
+    now = now or datetime.now()
+    target = Path(base)/f'{now:%Y}_{now:%j}_{now:%H%M%S}'
+    k = 1
+    while target.exists():
+        k += 1
+        target = Path(base)/f'{now:%Y}_{now:%j}_{now:%H%M%S}_{k}'
+    target.mkdir(parents=True)
+    return target
+
+
 def run(config, progress=None):
     progress = progress or (lambda percent, message: None)
     config.validate()
+    config = replace(config, output=run_directory(config.output))
+    progress(1, f'Results of this process: {config.output}')
     errors, _ = product_consistency(config)
     if errors:
         raise ValueError('\n'.join(errors))
@@ -233,7 +249,8 @@ def run(config, progress=None):
         result.ar_metadata['fcb_estimation'] = network
     progress(90, 'Writing CSV, Excel and summary outputs')
     export_result(result, config.output)
-    progress(100, 'Processing finished')
+    result.output_dir = config.output
+    progress(100, f'Processing finished: {config.output}')
     return result
 
 
@@ -241,6 +258,7 @@ def compare(config, names, progress=None):
     """Run the named VARIANTS on the same prepared data; one output folder per variant."""
     progress = progress or (lambda percent, message: None)
     config.validate()
+    config = replace(config, output=run_directory(config.output))
     names = [n for n in names if config.technique != 'PPP' or n not in AR_ONLY]
     if not names:
         raise ValueError('Karşılaştırma için en az bir uygun yöntem seçin (AR varyantları PPP-AR tekniği ister).')
@@ -266,7 +284,8 @@ def compare(config, names, progress=None):
     table = pd.DataFrame(rows)
     target = Path(config.output)/'comparison'
     table.to_csv(target/'statistics.csv', index=False)
-    progress(100, 'Comparison finished')
+    table.attrs['output'] = Path(config.output)
+    progress(100, f'Comparison finished: {config.output}')
     return table, results
 
 
