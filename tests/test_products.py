@@ -84,7 +84,9 @@ class FCBTests(unittest.TestCase):
         b1, b2 = -1.85653, -2.22089
         obs = pd.DataFrame([dict(epok=0.0, sat=5, A4=LAMBDA_W*(7+b1-b2), dt_sat=0.0), dict(epok=400.0, sat=5, A4=0.0, dt_sat=0.0)])
         out = products.apply(obs)
-        self.assertEqual(len(out), 1)
+        # The epoch outside the FCB interval stays as a float-only row (no AR candidate).
+        self.assertEqual(out.ar_usable.tolist(), [True, False])
+        self.assertEqual(out.mw_m[1], 0.0)
         self.assertAlmostEqual((out.A4+out.mw_m)[0]/LAMBDA_W, 7.0, places=9)
         self.assertAlmostEqual(out.phase_m[0], -(IF1*C/F1*b1+IF2*C/F2*b2), places=9)
 

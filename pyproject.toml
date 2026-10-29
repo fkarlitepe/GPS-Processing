@@ -4,10 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "togu-gps-processing"
-version = "2.8.0"
-description = "Modular experimental GPS PPP / PPP-AR processing with EKF and machine learning options"
+version = "2.9.0"
+description = "Modular experimental GNSS (GPS + Galileo) PPP / PPP-AR processing with EKF and machine learning options"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.21", "pandas>=1.4", "openpyxl>=3.0", "scikit-learn>=1.6", "scipy>=1.13"]
+dependencies = ["numpy>=1.21", "pandas>=1.4", "openpyxl>=3.0", "scipy>=1.13"]
+
+[project.optional-dependencies]
+# Calibrated AR validators, the validator benchmark and model files (joblib); without it the
+# dependency-free logistic validator is used.
+ml = ["scikit-learn>=1.6", "joblib>=1.3"]
+config = ["pyyaml>=6", "tomli>=2; python_version < '3.11'"]
 
 [project.scripts]
 togu-gps = "gps_processing.cli:main"

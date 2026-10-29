@@ -6,6 +6,15 @@ GNSS (GPS + Galileo) Precise Point Positioning (PPP / PPP-AR) araştırma projes
 
 **v2.5:** Integer phase clock (IPC, Laurichesse) kullanıcı modeli eklendi (`--technique PPP-AR/IPC`). SDBS/DCM, Shi & Gao (2014) karşılaştırmasına göre gözden geçirildi; referans uydu değişiminde belirsizlikler artık sıfırlanmıyor, tamsayı kaydırmayla korunuyor. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
 
+**v2.9 (literatüre göre gözden geçirme):**
+
+- *Teşhis ve ürün denetimi:* dar şerit teşhisi (`--diagnose-nl`); ürün merkezleri dosya başlığından denetleniyor. Data/fcb/post_2023327'deki `GBM…ABS.BIA` aslında CNES'in, saatler ise GFZ'nin.
+- *Yeni modeller:* okyanus yüklemesi (BLQ), kutup gelgiti (ERP), Shapiro gecikmesi, uydu PCV, ORBEX yönelimi. Ayrıntılar: [modeller ve teşhis](docs/MODELS.md).
+- *AR politikası:* PRIDE aday kapıları, Dong–Bock P0 sıralaması, FFRT kabul testi, uydu dışlamalı kısmi çözüm, isteğe bağlı fix-and-hold.
+- *EKF ve ML:* gözlem grubu başına uyarlamalı varyans faktörleri, bias'a duyarlı ML doğrulayıcı, kendi kendini eğiten çözülebilirlik modeli, FCB EKF'sinde öğrenilen süreç gürültüsü.
+- *Kompakt sistem:* tek EKF çekirdeği (float PPP ve PPP-AR aynı döngü; v2.8 sonuçlarıyla bit düzeyinde aynı), tek ürün girişi, v2.0 `legacy/` altına alındı, JSON/TOML/YAML ayar dosyası, scikit-learn isteğe bağlı.
+- *Büyük ağlar:* 100+ istasyonlu FCB ağı (paralel süreçler, vektörleştirilmiş yörünge enterpolasyonu ~70× hızlı, koordinat sabitleme, katkı sayısı filtresi, ağ uyarıları).
+
 **v2.8 (GNSS):** GPS (L1/L2) ve Galileo (E1/E5a) seçimli çözüm (`--systems G E`, arayüzde onay kutuları). RINEX 2/3, SP3, CLK, ANTEX, OSB ve FCB okuyucuları Galileo'yu da okur. Her sistemin kendi alıcı saati/biasları ve kendi referans uydusu vardır; FCB kestirimi sistem başına en az 5 istasyon ister. Ayrıntılar: [GNSS belgesi](docs/GNSS.md).
 
 **v2.7:** RINEX 2.11 okuma; katı yer gelgiti (IERS 2010); OSB/FCB ürünlerinde eksik uydu saati düzeltildi (v2.6 hatası). `Data/network` istasyonları arayüzde otomatik listelenir; PPP-AR'de ürün yüklenmezse FCB'ler bu istasyonlardan kestirilip kullanılır. Referans ağdan (en az 5 istasyon) FCB kestirimi: Li & Zhang (2012) toplu çözüm, EKF ve EKF + ML kestiricileri, istasyon dışarıda bırakmalı doğrulama, GENFCB çıktısı (`--fcb-stations`). Ayrıntılar: [FCB belgesi](docs/FCB.md).
@@ -58,19 +67,22 @@ Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü a
 | RINEX 3 | `gps_processing/io/rinex.py` | Başlığa göre gözlem alanları; L1/L2/L5 fazlarının metreye dönüşümü |
 | FCB kestirimi | `gps_processing/processing/fcb/` | Ağdan WL/NL UFO kestirimi (batch, EKF, EKF+ML), doğrulama, GENFCB yazımı |
 | Saat dosyası | `gps_processing/io/clock_rinex.py` | RINEX CLK 30 s / 5 s uydu saatleri |
-| AR ürünleri | `gps_processing/io/osb_products.py`, `io/fcb_products.py` | Bias-SINEX kod+faz OSB ve GENFCB FCB → IF kod/faz ve MW düzeltmeleri |
-| Anten modelleri | `gps_processing/io/antex.py`, `processing/antenna.py` | ANTEX PCO/PCV, nominal yaw, faz wind-up |
-| Kod biasları | `gps_processing/io/bias_sinex.py` | Bias-SINEX DSB/OSB okuma; C1C/C2L… kodlarını C1W/C2W'ye hizalama |
+| AR ürünleri | `gps_processing/io/products.py` (tek giriş), `io/osb_products.py`, `io/fcb_products.py`, `io/ar_products.py` | Bias-SINEX kod+faz OSB, GENFCB FCB ve JSON → IF kod/faz ve MW düzeltmeleri |
+| Yer modelleri | `gps_processing/io/blq.py`, `io/erp.py`, `processing/tides.py` | Katı yer gelgiti, okyanus yüklemesi (BLQ), kutup gelgiti (ERP), Shapiro |
+| Uydu yönelimi | `gps_processing/io/orbex.py` | ORBEX kuaterniyonları (tutulma/öğle dönüşleri) |
+| Anten modelleri | `gps_processing/io/antex.py`, `processing/antenna.py` | ANTEX uydu PCO/PCV, alıcı PCO/PCV, nominal veya ORBEX yaw, faz wind-up |
+| Kod biasları | `gps_processing/io/bias_sinex.py` | Bias-SINEX DSB/OSB okuma; GPS kodlarını C1W/C2W'ye, Galileo kodlarını C1C/C5Q'ya hizalama |
 | Saat sıçraması | `gps_processing/processing/clock_jump.py` | 1 ms alıcı saat sıçramalarının algılanması ve fazdan giderilmesi |
 | Kombinasyonlar | `gps_processing/processing/combinations.py` | Ionosphere-free ve Melbourne–Wübbena |
 | Yörünge | `gps_processing/processing/orbit.py` | Yayım zamanı, 10 noktalı 9. derece Lagrange, saat enterpolasyonu, Dünya dönüşü |
 | Geometri | `gps_processing/processing/geometry.py` | Yükseklik açısı, öncül kovaryans |
-| Konum çözümü (v2.0 temel) | `gps_processing/processing/ppp.py` | Sıralı ağırlıklı kod/faz kestirimi; alıcı saati ve uydu belirsizlikleri |
-| EKF çekirdeği | `gps_processing/processing/estimation/` | İterasyonlu EKF, süreç gürültüsü, IGG-III robust, adaptif fading |
+| Konum çözümü (v2.0 temel, dondurulmuş) | `gps_processing/legacy/sequential.py` | Sıralı ağırlıklı kod/faz kestirimi; regresyon ve karşılaştırma için |
+| EKF çekirdeği | `gps_processing/processing/engine.py`, `processing/estimation/` | Tek epok döngüsü ve durum düzeni (float PPP ve PPP-AR eklentileri); iterasyonlu EKF, IGG-III, gözlem grubu varyans faktörleri, kinematikte fading |
 | EKF float PPP | `gps_processing/processing/ppp_ekf.py` | XYZ, saat, ZWD, IF belirsizlikleri; artık tablosu |
 | Fiziksel modeller | `processing/troposphere.py`, `processing/cycle_slip.py` | Saastamoinen + Niell (varsayılan) veya Chao eşleme; LLI/boşluk/MW/GF kayma tespiti |
-| PPP-AR | `gps_processing/processing/ar/` | SDBS/DCM filtresi, ILS, LAMBDA dekorelasyonu, bootstrapping PAR |
-| Makine öğrenmesi | `gps_processing/processing/ml/` | GBRT stokastik model, lojistik AR doğrulayıcı (numpy) |
+| PPP-AR | `gps_processing/processing/ar/` | SDBS/DCM/IPC kullanıcı modeli, LAMBDA/bootstrapping PAR, `policy.py`: P0 sıralama, FFRT, uydu dışlama, fix-and-hold |
+| NL teşhisi | `gps_processing/processing/diagnostics.py` | Koordinat sabit, float N1 kesirlerinin dağılımı; ürün/model tutarlılığı |
+| Makine öğrenmesi | `gps_processing/processing/ml/` | GBRT stokastik model, bias'a duyarlı AR doğrulayıcı, kendi kendini eğiten çözülebilirlik modeli (`fixability.py`) |
 | Analiz | `gps_processing/analysis.py` | ENU hataları, yakınsama süresi, yöntem istatistikleri |
 | Dışa aktarım | `gps_processing/io/export.py` | CSV, çok sayfalı Excel ve JSON özet |
 | İşlem servisi | `gps_processing/pipeline.py` | Tüm aşamaların açık veri akışı ve ilerleme olayları |
@@ -86,7 +98,11 @@ python -m gps_processing --sp3-before Data/…260….SP3 --sp3-day Data/…270�
   --compare 'Sequential LS (v2.0)' 'EKF' 'Adaptive + robust EKF' 'EKF + ML weighting' --output results
 ```
 
-Seçenekler: `--estimator sequential|ekf|adaptive-ekf`, `--dynamics static|kinematic`, `--no-troposphere`, `--no-physical-corrections`, `--no-robust`, `--integer-method ils|lambda`, `--ar-success-rate`, `--ar-validation ratio|ml|ratio+ml`, `--ml-weighting`, `--ml-validator Data/models/ar_validator.json`. `sequential` v2.0 sonucunu değiştirmeden üretir.
+Seçenekler: `--estimator sequential|ekf|adaptive-ekf`, `--dynamics static|kinematic`, `--no-troposphere`, `--no-physical-corrections`, `--no-robust`, `--integer-method ils|lambda|bootstrap|cascade`, `--ar-success-rate`, `--ar-validation ffrt|ratio|ml|ffrt+ml|ratio+ml`, `--ar-failure-rate`, `--ar-min-ambiguities`, `--ar-max-exclusions`, `--ar-min-elevation`, `--ar-min-arc`, `--ar-hold`, `--ar-fixability`, `--ml-weighting`, `--ml-validator`. Yer modelleri: `--ocean-loading BLQ`, `--erp ERP`, `--attitude ATT.OBX`, `--no-shapiro`, `--no-satellite-pcv`. Teşhis: `--diagnose-nl`. `sequential` v2.0 sonucunu değiştirmeden üretir.
+
+Ayar dosyası: `--write-config run.json` bütün ayarları JSON'a yazar; `--config run.json` (JSON; Python 3.11+/tomli ile TOML; PyYAML ile YAML) okur, komut satırındaki seçenekler dosyayı ezer. Arayüz aynı `ProcessingConfig` alanlarını kullanır.
+
+Bağımlılıklar: numpy, pandas, openpyxl, scipy. İsteğe bağlı: `pip install .[ml]` (scikit-learn, joblib: kalibre doğrulayıcılar ve karşılaştırma), `.[config]` (YAML/TOML). scikit-learn yoksa bağımlılıksız lojistik doğrulayıcı kullanılır.
 
 Kütüphane kullanımı:
 

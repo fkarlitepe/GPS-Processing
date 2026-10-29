@@ -1,18 +1,29 @@
 """FCB estimation from a reference network (at least five stations), Li & Zhang (2012) workflow.
 
 1. Every station is processed with the float EKF PPP (same orbit, clock, ANTEX and models the
-   users will apply); float zero-difference ambiguities are kept with their sigma and arc.
+   users will apply); float zero-difference ambiguities are kept with their sigma and arc. With
+   ``fcb_hold_coordinates`` (default) a first float pass gives the daily coordinate and the second
+   pass holds it, as network solutions do (Geng 2012, PRIDE), so that position errors do not leak
+   into the ambiguities. Stations run in parallel processes (100+ stations).
 2. Wide lane: arc means of the MW combination (cycles) -> WL UFOs (one block per day by
    default) -> integer WL ambiguity of every arc whose fractional residual passes the gate.
 3. Narrow lane: B_NL = (B_IF - beta*N_WL)/lambda_NL from the float IF ambiguity at the end of
    each block (default 15 min) -> NL UFOs per block.
 4. The UFOs are written as GENFCB L1/L2 FCBs, b1 = s_NL - (beta/lambda_NL)*s_WL and
    b2 = b1 - s_WL, which io.fcb_products turns back into the same WL and IF corrections.
-Each estimator (batch / EKF / EKF+ML) is validated by leaving each station out in turn.
+Each estimator (batch / EKF / EKF+ML) is validated by leaving each station out in turn (an
+evenly spread subset of 20 stations in large networks). Satellite FCBs of a block observed by fewer
+than ``fcb_min_contributors`` stations are dropped (0 = stations/10 within [1, 10]; Geng et al. 2012
+use 10 in global networks; with 5 sparse global stations a filter of 3 left 37 FCBs for the day).
+Literature networks: 80-200 global stations, or >= 10 regional stations within ~2000 km of the user
+(Li & Zhang 2012); the summary warns when the network is smaller or farther away.
 """
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace, asdict
 from pathlib import Path
 import json
+import multiprocessing
+import os
 import numpy as np
 import pandas as pd
 from gps_processing.processing.ar.models import BETA, LAMBDA_N, LAMBDA_W
@@ -31,19 +42,81 @@ def validate_stations(stations):
 
 
 def station_ambiguities(config, path, progress=lambda p, m: None):
-    """Float PPP of one station -> (name, date, MW per epoch, float IF ambiguities per epoch)."""
+    """Float PPP of one station -> (name, date, float IF ambiguities per epoch with MW, coordinate)."""
     from gps_processing.pipeline import prepare, antenna_models
     from gps_processing.processing import ppp_ekf
     from gps_processing.processing.atmosphere import Atmosphere
     station = replace(config, rinex=path, technique='PPP', estimator='ekf' if config.estimator == 'sequential' else config.estimator,
-                      ml_weighting=False, troposphere='')
+                      ml_weighting=False, troposphere='', reference_xyz=None, hold_coordinates=False, dynamics='static')
     orbit, obs, satellites = prepare(station, progress)
     obs, satellites, _ = antenna_models(station, obs, satellites)
     atmosphere = Atmosphere.from_config(station, obs)
     output = ppp_ekf.solve(obs.combined, satellites, obs.approximate_xyz, station, atmosphere=atmosphere)
+    last = output.positions[output.positions.epok >= output.positions.epok.max()-3600]
+    coordinate = last[['x', 'y', 'z']].mean().to_numpy(float)
+    if getattr(config, 'fcb_hold_coordinates', True):
+        held = replace(station, reference_xyz=tuple(coordinate), hold_coordinates=True)
+        output = ppp_ekf.solve(obs.combined, satellites, obs.approximate_xyz, held, atmosphere=atmosphere)
     name = (obs.marker or Path(path).name)[:9].strip() or Path(path).stem[:4]
     ambiguities = output.ambiguities.merge(obs.combined[['epok', 'sat', 'A4']], on=['epok', 'sat'], how='left')
-    return name, obs.date, ambiguities
+    return name, obs.date, ambiguities, coordinate
+
+
+def process_stations(config, paths, progress, workers=0):
+    """station_ambiguities for every path, in parallel processes (``workers`` 0: CPU count, max 8).
+    BLAS threads are limited to one per process to avoid oversubscription."""
+    workers = workers or min(os.cpu_count() or 1, 8, len(paths))
+    if workers <= 1:
+        out = []
+        for k, path in enumerate(paths):
+            progress(5+int(55*k/len(paths)), f'Float PPP for FCB: station {k+1}/{len(paths)} ({path.name})')
+            out.append(station_ambiguities(config, path))
+        return out
+    saved = {key: os.environ.get(key) for key in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')}
+    os.environ.update({key: '1' for key in saved})
+    try:
+        results = [None]*len(paths)
+        context = multiprocessing.get_context('spawn')
+        with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
+            futures = {pool.submit(station_ambiguities, config, path): k for k, path in enumerate(paths)}
+            for done, future in enumerate(as_completed(futures), 1):
+                results[futures[future]] = future.result()
+                progress(5+int(55*done/len(paths)), f'Float PPP for FCB: {done}/{len(paths)} stations ({workers} processes)')
+        return results
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def network_warnings(coordinates, user_xyz=None):
+    """Literature checks of the network geometry (Li & Zhang 2012; Geng et al. 2012)."""
+    warnings = []
+    count = len(coordinates)
+    if count < 10:
+        warnings.append(f'{count} stations: narrow-lane FCBs from fewer than 10 stations are weak (Li & Zhang 2012 use '
+                        '>= 10 regional stations; global products use 80-200).')
+    if user_xyz is not None and count:
+        distance = np.linalg.norm(np.asarray(list(coordinates.values()))-np.asarray(user_xyz, float), axis=1)/1e3
+        near = int((distance <= 2000).sum())
+        if near < min(10, count):
+            warnings.append(f'Only {near} of {count} stations are within 2000 km of the user station '
+                            f'(median {np.median(distance):.0f} km); regional FCBs should come from nearby stations.')
+    return warnings
+
+
+def drop_sparse(result, min_contributors):
+    """Remove satellite UFOs of blocks observed by fewer than ``min_contributors`` stations."""
+    if min_contributors <= 1 or result.rows.empty:
+        return 0
+    counts = result.rows[result.rows.fixed].groupby(['block', 'sat']).station.nunique()
+    keys = list(zip(result.satellite.block, result.satellite.sat))
+    keep = np.array([counts.get(key, 0) >= min_contributors for key in keys], bool)
+    dropped = int((~keep).sum())
+    result.satellite = result.satellite[keep].reset_index(drop=True)
+    return dropped
 
 
 def wide_lane_rows(name, ambiguities, min_epochs, wl_interval):
@@ -136,10 +209,9 @@ def estimate_fcb(config, stations, methods=core.METHODS, interval=900.0, wl_inte
             raise ValueError(f'FCB method must be one of {", ".join(core.METHODS)}.')
     output = Path(config.output)/'fcb'
     output.mkdir(parents=True, exist_ok=True)
-    data, names, date = [], set(), None
-    for k, path in enumerate(paths):
-        progress(5+int(55*k/len(paths)), f'Float PPP for FCB: station {k+1}/{len(paths)} ({path.name})')
-        name, day, ambiguities = station_ambiguities(config, path)
+    data, names, date, coordinates = [], set(), None, {}
+    for k, (path, (name, day, ambiguities, xyz)) in enumerate(zip(paths, process_stations(config, paths, progress,
+                                                                                           getattr(config, 'fcb_workers', 0)))):
         if date is not None and day.date() != date.date():
             raise ValueError(f'{path.name}: observation day differs from the other stations.')
         if name in names:
@@ -147,10 +219,24 @@ def estimate_fcb(config, stations, methods=core.METHODS, interval=900.0, wl_inte
         names.add(name)
         date = day
         data.append((name, ambiguities))
+        coordinates[name] = xyz
     wl_all = pd.DataFrame([row for name, a in data for row in wide_lane_rows(name, a, min_epochs, wl_interval)])
     wl_all.to_csv(output/'wide_lane_ambiguities.csv', index=False)
     systems = list(getattr(config, 'systems', ('G',)))
-    summary, results = {'stations': sorted(names), 'interval_s': interval, 'methods': {}, 'systems': {}}, {}
+    user_xyz = None
+    if getattr(config, 'rinex', '') and Path(str(config.rinex)).name not in {p.name for p in paths}:
+        try:
+            from gps_processing.io.rinex import read_header
+            from gps_processing.io.ionex import read_text
+            user_xyz = read_header(read_text(config.rinex)[:200])[2]
+        except (OSError, ValueError, IndexError):
+            user_xyz = None
+    summary, results = {'stations': sorted(names), 'interval_s': interval, 'methods': {}, 'systems': {},
+                        'hold_coordinates': bool(getattr(config, 'fcb_hold_coordinates', True)),
+                        'warnings': network_warnings(coordinates, user_xyz)}, {}
+    # 0 = automatic: one per ten stations (5 stations: no filter; 100 stations: 10 as in Geng et al. 2012).
+    min_contributors = int(getattr(config, 'fcb_min_contributors', 0)) or int(np.clip(len(names)//10, 1, 10))
+    summary['min_contributors'] = min_contributors
     usable = []
     for system in systems:
         table = wl_all[gnss.systems_of(wl_all.sat.to_numpy()) == system] if len(wl_all) else wl_all
@@ -179,6 +265,7 @@ def estimate_fcb(config, stations, methods=core.METHODS, interval=900.0, wl_inte
                 entry[system] = dict(wl_arcs=len(wl_table), wl_fixed=len(wide), error='no converged narrow-lane ambiguities')
                 continue
             nl = core.estimate(nl_table, method, gate)
+            sparse = drop_sparse(nl, min_contributors)
             parts[system] = (nl, wl)
             satellites_out += [nl.satellite.assign(lane='NL', system=system), wl.satellite.assign(lane='WL', system=system)]
             receivers_out += [nl.receiver.assign(lane='NL', system=system), wl.receiver.assign(lane='WL', system=system)]
@@ -186,7 +273,7 @@ def estimate_fcb(config, stations, methods=core.METHODS, interval=900.0, wl_inte
                         nl_per_station={str(key): int(v) for key, v in nl_table.station.value_counts().items()},
                         nl_fixed_fraction=float(nl.rows.fixed.mean()) if len(nl.rows) else 0.0,
                         nl_residual_rms=float(np.sqrt(np.mean(nl.rows.residual[nl.rows.fixed]**2))) if nl.rows.fixed.any() else np.nan,
-                        datum=nl.datum, **nl.info)
+                        datum=nl.datum, sparse_fcbs_dropped=sparse, **nl.info)
             if validate:
                 # Wide lane: one block per day, so the receiver part is removed over the whole day.
                 wl_loo = core.leave_one_out(wl_table.assign(block=0, epok=0.0), method, gate)

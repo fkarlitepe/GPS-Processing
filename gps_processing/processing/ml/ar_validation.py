@@ -67,9 +67,17 @@ class ARValidator:
 
     @classmethod
     def train(cls, samples=6000, seed=0, model=DEFAULT_MODEL, calibration=None):
-        from sklearn.calibration import CalibratedClassifierCV
-        from sklearn.frozen import FrozenEstimator
         calibration = calibration or max(samples//3, 500)
+        try:
+            from sklearn.calibration import CalibratedClassifierCV
+            from sklearn.frozen import FrozenEstimator
+        except ImportError:
+            # scikit-learn is optional (pip install .[ml]): dependency-free logistic regression, uncalibrated.
+            x, y = simulate(samples, seed)
+            fitted = NumpyLogistic().fit(x, y)
+            return cls(fitted, {'model': 'Logistic regression (numpy, v2.1)', 'samples': len(y), 'seed': seed,
+                                'correct_fraction': float(y.mean()), 'calibration': 'none (scikit-learn not installed)',
+                                'features': FEATURES})
         x, y = simulate(samples, seed)
         x_cal, y_cal = simulate(calibration, seed+1000)
         fitted = build_model(model).fit(x, y)

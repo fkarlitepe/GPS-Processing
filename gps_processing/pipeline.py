@@ -6,8 +6,9 @@ import pandas as pd
 from gps_processing.io.rinex import read_rinex
 from gps_processing.io.sp3 import combine_sp3
 from gps_processing.io.export import export_result
+from gps_processing.io.products import is_osb
 from gps_processing.processing.orbit import interpolate_satellites
-from gps_processing.processing.ppp import solve
+from gps_processing.legacy.sequential import solve
 from gps_processing.models import ProcessingResult
 from gps_processing import analysis
 
@@ -47,9 +48,10 @@ def prepare(config, progress):
     if config.repair_clock_jumps:
         from gps_processing.processing.clock_jump import repair_clock_jumps
         obs.combined, obs.clock_jumps = repair_clock_jumps(obs.combined)
-    if config.code_biases:
+    # OSB AR products carry a code bias for every tracked signal, so no alignment is needed there.
+    if config.code_biases and not (config.technique != 'PPP' and is_osb(config.ar_products)):
         from gps_processing.io.bias_sinex import CodeBiases, align_code_biases, read_bias_sinex
-        progress(30, 'Aligning code biases to C1W/C2W (Bias-SINEX)')
+        progress(30, 'Aligning code biases to the clock datum: GPS C1W/C2W, Galileo C1C/C5Q (Bias-SINEX)')
         obs.combined = align_code_biases(obs.combined, CodeBiases(read_bias_sinex(config.code_biases, obs.date)))
     day = orbit.loc[orbit.epok == 0, 'timestamp']
     if day.empty or day.iloc[0].date() != obs.date.date():
@@ -80,23 +82,44 @@ def load_antex(path, receiver):
     return read_antex(path, receiver=[receiver, receiver[:16].ljust(16)+'NONE'])
 
 
+@lru_cache(maxsize=2)
+def load_attitude(path, date):
+    from gps_processing.io.orbex import read_orbex
+    return read_orbex(path, date)
+
+
 def antenna_models(config, obs, satellites):
-    """Phase wind-up and solid Earth tide (EKF and AR; the sequential v2.0 baseline stays
-    unchanged) and, with an ANTEX file, satellite PCO plus receiver ARP/PCO/PCV. Applied per
-    variant on copies."""
+    """Phase wind-up, satellite attitude (ORBEX), site displacements (solid tide, ocean loading,
+    pole tide) and the Shapiro delay (EKF and AR; the sequential v2.0 baseline stays unchanged)
+    and, with an ANTEX file, satellite PCO/PCV plus receiver ARP/PCO/PCV. Applied per variant on copies."""
     baseline = config.technique == 'PPP' and config.estimator == 'sequential'
-    if baseline or not (config.phase_windup or config.antex or config.solid_tides):
+    site = config.solid_tides or config.ocean_loading or config.erp or config.shapiro
+    if baseline or not (config.phase_windup or config.antex or site):
         return obs, satellites, {}
     combined, info = obs.combined, {}
     if config.phase_windup or config.antex:
         from gps_processing.processing.antenna import apply_antenna_models
         antennas = load_antex(str(config.antex), obs.antenna_type.ljust(20)[:20]) if config.antex else None
+        attitude = load_attitude(str(config.attitude), obs.date) if config.attitude else None
         combined, satellites, info = apply_antenna_models(combined, satellites, obs.approximate_xyz, obs.date,
-                                                          antennas, obs.antenna_type, obs.antenna_delta, config.phase_windup)
-    if config.solid_tides:
-        from gps_processing.processing.tides import apply_solid_tide
-        combined = apply_solid_tide(combined, satellites, obs.approximate_xyz, obs.date)
-        info['solid_earth_tide'] = 'IERS 2010 degree 2 (tide-free)'
+                                                          antennas, obs.antenna_type, obs.antenna_delta, config.phase_windup,
+                                                          attitude, config.satellite_pcv)
+    if site:
+        from gps_processing.processing.tides import site_models
+        ocean = erp = None
+        if config.ocean_loading:
+            from gps_processing.io.blq import read_blq, select_station
+            ocean = select_station(read_blq(config.ocean_loading), obs.marker, config.ocean_loading)
+            info['ocean_loading'] = f'BLQ {Path(config.ocean_loading).name} ({obs.marker or "?"}), 11 constituents'
+        if config.erp:
+            from gps_processing.io.erp import read_erp
+            erp = read_erp(config.erp)
+            info['pole_tide'] = f'IERS 2010 eq. 7.24, polar motion from {Path(config.erp).name}'
+        combined = site_models(combined, satellites, obs.approximate_xyz, obs.date, config.solid_tides, ocean, erp, config.shapiro)
+        if config.solid_tides:
+            info['solid_earth_tide'] = 'IERS 2010 degree 2 (tide-free)'
+        if config.shapiro:
+            info['shapiro_delay'] = 'applied'
     return replace(obs, combined=combined), satellites, info
 
 
@@ -119,7 +142,7 @@ def estimate(config, orbit, obs, satellites, progress=None):
             progress(50, 'Reading external atmosphere products (IONEX / SINEX_TRO)')
         atmosphere = Atmosphere.from_config(config, obs)
     variance_model = learn_weights(config, obs, satellites, progress, atmosphere) if config.ml_weighting else None
-    residuals, products, validator = None, None, None
+    residuals, products, validator, fixability = None, None, None, None
     progress(65, f'{config.technique} · {config.estimator} estimation')
     if config.technique == 'PPP':
         if config.estimator == 'sequential':
@@ -131,18 +154,11 @@ def estimate(config, orbit, obs, satellites, progress=None):
             positions, ambiguities, diagnostics, covariance, corrections = output
             residuals = output.residuals
     else:
-        from gps_processing.io.ar_products import ARProducts
+        from gps_processing.io import products as product_io
         from gps_processing.processing.ar.solver import solve as solve_ar
         method = config.technique.split('/')[-1]
-        if is_osb(config.ar_products):
-            from gps_processing.io.osb_products import OSBProducts
-            progress(58, 'Reading code and phase OSBs (Bias-SINEX)')
-            products = OSBProducts(config.ar_products, method, obs.date, config.clock_file)
-        elif str(config.ar_products).lower().endswith('.fcb'):
-            from gps_processing.io.fcb_products import FCBProducts
-            products = FCBProducts(config.ar_products, method, obs.date)
-        else:
-            products = ARProducts(config.ar_products, method, obs.date)
+        progress(58, f'Reading the AR product ({product_io.kind(config.ar_products).upper()})')
+        products = product_io.load(config.ar_products, method, obs.date, config.clock_file)
         check_product_systems(products, config.systems, Path(config.ar_products).name)
         if products.meta['schema'] == 'togu-ar-1' and products.meta['orbit_product'] != Path(config.sp3_day).name:
             raise ValueError('AR ürününün orbit_product alanı ölçüm günü SP3 dosyasıyla eşleşmiyor.')
@@ -151,8 +167,13 @@ def estimate(config, orbit, obs, satellites, progress=None):
             progress(60, 'Preparing ML ambiguity validator')
             validator = ARValidator.load(config.ml_validator) if config.ml_validator else default_validator()
         combined = products.apply(obs.combined)
+        fixability = None
+        if config.ar_fixability:
+            from gps_processing.processing.ml.fixability import learn
+            progress(62, 'ML fixability: float pass and hindsight labels')
+            fixability = learn(config, combined, satellites, obs.approximate_xyz, variance_model, atmosphere)
         positions, ambiguities, diagnostics, covariance, corrections = solve_ar(
-            combined, satellites, obs.approximate_xyz, config, variance_model, validator, atmosphere)
+            combined, satellites, obs.approximate_xyz, config, variance_model, validator, atmosphere, fixability)
     result = ProcessingResult(positions, ambiguities, diagnostics, covariance, obs, satellites, orbit, corrections, config.technique)
     result.residuals = residuals
     result.settings = settings(config)
@@ -175,6 +196,8 @@ def estimate(config, orbit, obs, satellites, progress=None):
         result.ml_models['stochastic_model'] = variance_model.to_dict()
     if validator is not None:
         result.ml_models['ar_validator'] = validator.to_dict()
+    if config.technique != 'PPP' and config.ar_fixability:
+        result.ml_models['fixability'] = fixability.to_dict() if fixability is not None else 'too few hindsight labels; P0 order used'
     reference, source = reference_coordinate(config, result)
     result.positions = analysis.add_enu(result.positions, reference)
     result.statistics = analysis.statistics(result.positions, reference, config.technique, source)
@@ -197,24 +220,70 @@ def check_product_systems(products, systems, name):
                              f'{gnss.NAMES[system]} or deselect {gnss.NAMES[system]}.')
 
 
+# Analysis-centre codes of file names and file headers -> one name per centre.
+CENTRES = {'GFZ': 'GFZ', 'GBM': 'GFZ', 'GFR': 'GFZ', 'CNT': 'CNES', 'CNE': 'CNES', 'GRG': 'CNES', 'GRE': 'CNES',
+           'COD': 'CODE', 'CO2': 'CODE', 'AIU': 'CODE', 'WHU': 'WHU', 'WUM': 'WHU', 'WMC': 'WHU', 'ESA': 'ESA',
+           'ESM': 'ESA', 'JPL': 'JPL', 'IGS': 'IGS', 'SHA': 'SHAO', 'JAX': 'JAXA', 'TUG': 'TUG', 'IAC': 'IAC'}
+
+
 def centre(path):
     """Analysis-centre prefix of an IGS long file name (GBM0MGXRAP_... -> GBM), else ''."""
     name = Path(str(path)).name
     return name[:3].upper() if len(name) > 20 and name[3:4].isdigit() and '_' in name else ''
 
 
+def header_centre(path):
+    """Analysis centre written in the file itself (SP3 agency, CLK 'ANALYSIS CENTER', Bias-SINEX
+    file agency, ORBEX CREATED_BY), '' if the file cannot be read or does not say."""
+    try:
+        from gps_processing.io.ionex import read_text
+        lines = read_text(path)[:80]
+    except (OSError, ValueError, UnicodeDecodeError):
+        return ''
+    if not lines:
+        return ''
+    first = lines[0]
+    if first.startswith('%=BIA'):
+        tokens = first.split()
+        return tokens[2][:3].upper() if len(tokens) > 2 else ''
+    if first.startswith('#') and first[1:2] in 'abcd':
+        return first[56:60].strip()[:3].upper()
+    for line in lines:
+        if line[60:].startswith('ANALYSIS CENTER'):
+            return line[:3].strip().upper()
+        if line.split()[:1] == ['CREATED_BY']:
+            return line.split()[1][:3].upper()
+    return ''
+
+
+def owner(path):
+    """Canonical centre of a product: from its header when readable, otherwise from its name."""
+    code = header_centre(path) or centre(path)
+    return CENTRES.get(code, code)
+
+
 def product_consistency(config):
-    """(errors, warnings) about mixing analysis centres between the AR product and SP3/CLK."""
+    """(errors, warnings) about mixing analysis centres between the AR product and SP3/CLK.
+
+    File headers are trusted over file names: a Bias-SINEX renamed to another centre's long name
+    (e.g. a CNES OSB file saved as GBM0MGXRAP_..._ABS.BIA) still carries its own agency."""
     errors, warnings = [], []
     if config.technique == 'PPP' or not config.ar_products:
         return errors, warnings
     product, orbit, clock = Path(config.ar_products), Path(str(config.sp3_day)).name, Path(str(config.clock_file)).name if config.clock_file else ''
     if is_osb(product):
-        owner = centre(product)
-        for kind, name in (('SP3', orbit), ('CLK', clock)):
-            if owner and centre(name) and centre(name) != owner:
-                errors.append(f'OSB product {product.name} is from {owner}, but the {kind} file {name} is from {centre(name)}. '
-                              f'Use the {owner} SP3 and CLK files.')
+        bias = owner(product)
+        named = CENTRES.get(centre(product), centre(product))
+        if bias and named and bias != named:
+            errors.append(f'{product.name} is named as a {named} product, but its header says it was produced by {bias}. '
+                          f'Use it only with {bias} SP3 and CLK files.')
+        for kind, path in (('SP3', config.sp3_day), ('CLK', config.clock_file)):
+            if not path:
+                continue
+            other = owner(path)
+            if bias and other and other != bias:
+                errors.append(f'OSB product {product.name} is from {bias}, but the {kind} file {Path(str(path)).name} is from {other}. '
+                              f'Use the {bias} SP3 and CLK files.')
     elif product.suffix.lower() == '.fcb':
         from gps_processing.io.ionex import read_text
         header = ' '.join(line for line in read_text(product)[:6] if line.startswith('#'))
@@ -226,13 +295,12 @@ def product_consistency(config):
             warnings.append(f'{product.name} does not state which orbit/clock it was estimated with. Its narrow-lane FCBs are '
                             f'only valid with that product; make sure {orbit} and {clock or "the SP3 clocks"} are the ones its '
                             'provider used.')
+    attitude = getattr(config, 'attitude', '')
+    if attitude and config.clock_file and owner(attitude) and owner(config.clock_file) and owner(attitude) != owner(config.clock_file):
+        warnings.append(f'The attitude file {Path(attitude).name} ({owner(attitude)}) is not from the clock centre '
+                        f'({owner(config.clock_file)}); use the attitude of the orbit/clock centre.')
+    errors = list(dict.fromkeys(errors))
     return errors, warnings
-
-
-def is_osb(path):
-    """Bias-SINEX (*.BIA, *.BSX, gz) AR products carry code and phase OSBs; others are JSON."""
-    import re
-    return bool(re.search(r'\.(BIA|BSX)(\.GZ)?$', str(path).upper()))
 
 
 def settings(config):

@@ -6,7 +6,8 @@ Phase in cycles contains N_i + b_i, so the corrections added to the observations
     phase_m = -(IF combination of lambda_i * b_i),  mw_m = -lambda_W (b_1 - b_2),  code_m = 0
 (WL check on real data: MW/lambda_W - (b_1 - b_2) is integer up to the receiver bias).
 FCBs refer to the orbit/clock product used to estimate them; the narrow-lane part is only valid
-with that product, which the file does not name.
+with that product, which the file does not name. Observations without an FCB are kept as float-only
+rows (``ar_usable`` False).
 """
 from datetime import datetime
 from pathlib import Path
@@ -72,7 +73,12 @@ class FCBProducts:
         result['phase_m'] = clock-(if1*gnss.per_row(sats, 'lambda1')*b1+if2*gnss.per_row(sats, 'lambda2')*b2)
         result['mw_m'] = -gnss.per_row(sats, 'lambda_w')*(b1-b2)
         complete = np.isfinite(b1) & np.isfinite(b2)
-        self.meta['dropped_rows'] = int((~complete).sum())
         if not complete.any():
             raise ValueError('No observation is covered by the FCB file.')
-        return result[complete].reset_index(drop=True)
+        # Satellites/blocks without an FCB stay in the float solution (clock only) but are no AR
+        # candidates and never the reference; the AR filter restarts their arc when coverage changes.
+        result.loc[~complete, 'phase_m'] = clock[~complete]
+        result.loc[~complete, 'mw_m'] = 0.0
+        result['ar_usable'] = complete
+        self.meta['rows_without_fcb'] = int((~complete).sum())
+        return result.reset_index(drop=True)

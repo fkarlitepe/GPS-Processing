@@ -285,3 +285,59 @@ def evaluate(a, covariance, method='lambda', min_success=0.999):
     return dict(combinations=combos, integers=integers[0], scores=scores, dimension=k,
                 ratio=float(scores[1]/max(scores[0], 1e-12)), success=success,
                 success_upper=adop_upper_bound(adop, k), adop=adop, float_dimension=n, method=method)
+
+
+def fix_probability(a, sigma, terms=50):
+    """Dong & Bock (1989) probability P0 of rounding each float ambiguity to its nearest integer:
+    P0 = 1 - sum_{n>=1} [erfc((n-b)/(sqrt2 sigma)) - erfc((n+b)/(sqrt2 sigma))], b = |a - round(a)|.
+    Ge et al. (2005) order the fixing by P0 (74 % -> 97 % correctly fixed); used here to order
+    and exclude candidates before the LAMBDA search."""
+    a = np.atleast_1d(np.asarray(a, float))
+    sigma = np.maximum(np.atleast_1d(np.asarray(sigma, float)), 1e-9)
+    b = np.abs(a-np.rint(a))
+    n = np.arange(1, terms+1)[:, None]
+    scale = np.sqrt(2)*sigma[None, :]
+    total = np.sum(_erfc((n-b[None, :])/scale)-_erfc((n+b[None, :])/scale), axis=0)
+    return np.clip(1-total, 0.0, 1.0)
+
+
+def _erfc(x):
+    from scipy.special import erfc
+    return erfc(x)
+
+
+def ffrt_threshold(qz, failure_rate=0.001, samples=3000, seed=0):
+    """Fixed-failure-rate ratio-test threshold mu (Verhagen & Teunissen 2013) for the
+    decorrelated covariance ``qz`` of the subset to be fixed, in the convention of ``evaluate``
+    (accept when second/best >= mu).
+
+    The ratio distribution is simulated: float errors are drawn from N(0, qz), the integer is the
+    bootstrapped solution of the decorrelated ambiguities (equal to ILS for most samples once
+    Z-decorrelated) and the runner-up is the best unit neighbour. mu is the smallest value whose
+    accepted wrong fixes stay below ``failure_rate``; with an IB success rate >= 1 - failure_rate
+    every fix may be accepted (mu = 1)."""
+    q = np.asarray(qz, float)
+    n = len(q)
+    lower, d = ldl(q)
+    if bootstrap_success(d) >= 1-failure_rate:
+        return 1.0
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((samples, n))@np.linalg.cholesky(q).T
+    conditional, fixed = np.zeros((samples, n)), np.zeros((samples, n))
+    for i in range(n-1, -1, -1):
+        conditional[:, i] = x[:, i]-(conditional[:, i+1:]-fixed[:, i+1:])@lower[i+1:, i]
+        fixed[:, i] = np.rint(conditional[:, i])
+    weight = np.linalg.inv(q)
+    residual = x-fixed
+    r = residual@weight
+    best = np.einsum('ij,ij->i', r, residual)
+    neighbour = best[:, None]+np.diag(weight)[None, :]-2*np.abs(r)
+    second = neighbour.min(axis=1)
+    ratio = second/np.maximum(best, 1e-12)
+    wrong = np.any(fixed != 0, axis=1)
+    if wrong.mean() <= failure_rate:
+        return 1.0
+    order = np.argsort(-ratio)
+    rate = np.cumsum(wrong[order])/samples                 # accepted-and-wrong fraction of all samples
+    ok = np.flatnonzero(rate <= failure_rate)
+    return float(ratio[order][ok[-1]]) if len(ok) else float(ratio.max()+1)

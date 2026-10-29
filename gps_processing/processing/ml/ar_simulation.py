@@ -12,14 +12,19 @@ is what a formal test (ratio, success rate) cannot see:
   two ambiguities in 20% of the samples.
 Labels compare the fixed integer combinations with the true ones, so partial fixes are
 labelled correctly as well.
+
+Besides the formal quantities (ratio, success rates, ADOP) the features hold the margin to the
+fixed-failure-rate ratio threshold (FFRT, Verhagen & Teunissen 2013), the smallest Dong & Bock
+P0 and the largest fractional part of the fixed ambiguities: the formal ones are blind to the
+injected biases, the last two are not (bias-aware validation).
 """
 import numpy as np
-from gps_processing.processing.ar.integer import evaluate
+from gps_processing.processing.ar.integer import evaluate, ffrt_threshold, fix_probability
 from gps_processing.processing.ar.models import LAMBDA_N, LAMBDA_W, combination_covariance
 from gps_processing.processing.troposphere import chao_mapping
 
 FEATURES = ['log_ratio', 'logit_success', 'logit_success_upper', 'log_adop', 'dimension', 'fixed_fraction',
-            'log_best_norm', 'log_second_norm', 'stage_n1']
+            'log_best_norm', 'log_second_norm', 'stage_n1', 'log_ffrt_margin', 'logit_min_p0', 'max_fraction']
 
 
 def feature_vector(result, stage='n1'):
@@ -29,7 +34,18 @@ def feature_vector(result, stage='n1'):
     return np.array([np.log(max(result['ratio'], 1.0)), logit(result['success']),
                      logit(result.get('success_upper', result['success'])), np.log(result['adop']), k,
                      k/max(result.get('float_dimension', k), 1), np.log1p(result['scores'][0]/k),
-                     np.log1p(result['scores'][1]/k), float(stage == 'n1')])
+                     np.log1p(result['scores'][1]/k), float(stage == 'n1'),
+                     np.log(max(result['ratio'], 1e-6)/max(result.get('ffrt_threshold', 1.0), 1e-6)),
+                     logit(result.get('min_p0', 1.0)), result.get('max_fraction', 0.0)])
+
+
+def add_policy_features(result, a, q, failure_rate=0.001):
+    """FFRT threshold, smallest P0 and largest fraction of a simulated float vector (as in policy.run_stage)."""
+    combos = result['combinations']
+    result['ffrt_threshold'] = ffrt_threshold(combos@q@combos.T, failure_rate, samples=1000)
+    result['min_p0'] = float(fix_probability(a, np.sqrt(np.diag(q))).min())
+    result['max_fraction'] = float(np.max(np.abs(a-np.rint(a))))
+    return result
 
 
 def sky(rng, satellites):
@@ -87,7 +103,7 @@ def sample(rng, method='lambda', bias_probability=0.2):
     if rng.random() < bias_probability:
         hit = rng.choice(n, size=int(rng.integers(1, 3)), replace=False)
         a[hit] += rng.uniform(-0.25, 0.25, len(hit))
-    result = evaluate(a, q, method, min_success=rng.choice([0.0, 0.9, 0.99, 0.999]))
+    result = add_policy_features(evaluate(a, q, method, min_success=rng.choice([0.0, 0.9, 0.99, 0.999])), a, q)
     correct = np.array_equal(np.rint(result['combinations']@truth), np.rint(result['integers']))
     return result, feature_vector(result, stage), float(correct)
 
