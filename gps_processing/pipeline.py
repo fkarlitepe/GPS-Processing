@@ -26,11 +26,24 @@ VARIANTS = {
 AR_ONLY = {name for name in VARIANTS if name.startswith('AR ·')}
 
 
+def select_systems(combined, systems, name=''):
+    """Keep the satellite systems chosen by the user (GPS 'G', Galileo 'E')."""
+    from gps_processing import gnss
+    keep = combined[np.isin(gnss.systems_of(combined.sat.to_numpy()), list(systems))]
+    missing = [gnss.NAMES[s] for s in systems if not np.isin(gnss.systems_of(keep.sat.to_numpy()), [s]).any()]
+    if keep.empty:
+        raise ValueError(f'{name}: no dual-frequency observations of the selected systems ({", ".join(gnss.NAMES[s] for s in systems)}).')
+    keep = keep.reset_index(drop=True)
+    keep.attrs['missing_systems'] = missing
+    return keep
+
+
 def prepare(config, progress):
     progress(5, 'Reading SP3 files')
     orbit = combine_sp3(config.sp3_before, config.sp3_day, config.sp3_after)
     progress(20, 'RINEX and signal combinations')
     obs = read_rinex(config.rinex)
+    obs.combined = select_systems(obs.combined, config.systems, Path(config.rinex).name)
     if config.repair_clock_jumps:
         from gps_processing.processing.clock_jump import repair_clock_jumps
         obs.combined, obs.clock_jumps = repair_clock_jumps(obs.combined)
@@ -41,11 +54,21 @@ def prepare(config, progress):
     day = orbit.loc[orbit.epok == 0, 'timestamp']
     if day.empty or day.iloc[0].date() != obs.date.date():
         raise ValueError('RINEX gözlem günü ile ölçüm günü SP3 tarihi eşleşmiyor.')
+    from gps_processing import gnss
+    for system in config.systems:
+        if not np.isin(gnss.systems_of(orbit.sat.to_numpy()), [system]).any():
+            raise ValueError(f'{Path(str(config.sp3_day)).name} has no {gnss.NAMES[system]} satellites: '
+                             'choose a multi-GNSS orbit (e.g. *MGX*) or deselect that system.')
     clocks = None
     if config.clock_file:
         from gps_processing.io.clock_rinex import Clocks, read_clock_rinex
         progress(35, 'Reading high-rate satellite clocks (RINEX CLK)')
-        clocks = Clocks(read_clock_rinex(config.clock_file, obs.date))
+        frame = read_clock_rinex(config.clock_file, obs.date)
+        for system in config.systems:
+            if not np.isin(gnss.systems_of(frame.sat.to_numpy()), [system]).any():
+                raise ValueError(f'{Path(config.clock_file).name} has no {gnss.NAMES[system]} clocks: '
+                                 'choose a multi-GNSS clock file or deselect that system.')
+        clocks = Clocks(frame)
     progress(40, 'Satellite clocks, 9th-order Lagrange interpolation and relativity')
     obs.combined, satellites = interpolate_satellites(orbit, obs.combined, clocks)
     return orbit, obs, satellites
@@ -100,7 +123,8 @@ def estimate(config, orbit, obs, satellites, progress=None):
     progress(65, f'{config.technique} · {config.estimator} estimation')
     if config.technique == 'PPP':
         if config.estimator == 'sequential':
-            positions, ambiguities, diagnostics, covariance, corrections = solve(obs.combined, satellites, obs.approximate_xyz, config.elevation_mask)
+            gps = obs.combined[obs.combined.sat <= 100]              # the v2.0 baseline is GPS only
+            positions, ambiguities, diagnostics, covariance, corrections = solve(gps, satellites, obs.approximate_xyz, config.elevation_mask)
         else:
             from gps_processing.processing import ppp_ekf
             output = ppp_ekf.solve(obs.combined, satellites, obs.approximate_xyz, config, variance_model, atmosphere)
@@ -119,6 +143,7 @@ def estimate(config, orbit, obs, satellites, progress=None):
             products = FCBProducts(config.ar_products, method, obs.date)
         else:
             products = ARProducts(config.ar_products, method, obs.date)
+        check_product_systems(products, config.systems, Path(config.ar_products).name)
         if products.meta['schema'] == 'togu-ar-1' and products.meta['orbit_product'] != Path(config.sp3_day).name:
             raise ValueError('AR ürününün orbit_product alanı ölçüm günü SP3 dosyasıyla eşleşmiyor.')
         if 'ml' in config.ar_validation:
@@ -160,6 +185,16 @@ def reference_coordinate(config, result):
     if config.reference_xyz is not None:
         return np.asarray(config.reference_xyz, dtype=float), 'kullanıcı referansı'
     return result.positions.iloc[-1][['x', 'y', 'z']].to_numpy(dtype=float), 'son epok çözümü'
+
+
+def check_product_systems(products, systems, name):
+    """Every selected system must be covered by the AR product (otherwise its ambiguities cannot be fixed)."""
+    from gps_processing import gnss
+    sats = products.frame.sat.to_numpy() if hasattr(products, 'frame') else np.array([], int)
+    for system in systems:
+        if not np.isin(gnss.systems_of(sats), [system]).any():
+            raise ValueError(f'AR product {name} has no {gnss.NAMES[system]} biases. Choose a product that contains '
+                             f'{gnss.NAMES[system]} or deselect {gnss.NAMES[system]}.')
 
 
 def centre(path):
@@ -268,7 +303,7 @@ def compare(config, names, progress=None):
     for i, name in enumerate(names):
         overrides = dict(VARIANTS[name])
         if overrides.get('estimator') == 'sequential' and config.technique == 'PPP':
-            overrides.update(ionosphere='', troposphere='')   # the v2.0 baseline has no atmosphere models
+            overrides.update(ionosphere='', troposphere='', systems=('G',))   # the v2.0 baseline: GPS, no atmosphere models
         variant = replace(config, **overrides, output=Path(config.output)/'comparison'/slug(name))
         variant.validate()
         step = lambda p, m, i=i: progress(int(45+50*(i+p/100)/len(names)), f'[{name}] {m}')

@@ -1,10 +1,12 @@
-# TOGU GPS Processing
+# TOGU GNSS Processing
 
-GPS Precise Point Positioning (PPP) araştırma projesi.
+GNSS (GPS + Galileo) Precise Point Positioning (PPP / PPP-AR) araştırma projesi.
 
 **v2.1:** Kestirim noktalarına iterasyonlu **genişletilmiş Kalman filtresi** (statik/kinematik, ZWD kestirimi, IGG-III robust ve adaptif güncelleme), **LAMBDA + kısmi AR** ve iki **makine öğrenmesi** bileşeni (artıklardan öğrenilen gözlem varyansı, Monte Carlo ile eğitilmiş AR doğrulayıcı) eklendi; arayüze yöntem ayarları, grafikler ve **yöntem karşılaştırması** sekmesi geldi. Denklemler, örnek sonuçlar ve deney tasarımı: [EKF ve ML belgesi](docs/EKF_ML.md).
 
 **v2.5:** Integer phase clock (IPC, Laurichesse) kullanıcı modeli eklendi (`--technique PPP-AR/IPC`). SDBS/DCM, Shi & Gao (2014) karşılaştırmasına göre gözden geçirildi; referans uydu değişiminde belirsizlikler artık sıfırlanmıyor, tamsayı kaydırmayla korunuyor. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
+
+**v2.8 (GNSS):** GPS (L1/L2) ve Galileo (E1/E5a) seçimli çözüm (`--systems G E`, arayüzde onay kutuları). RINEX 2/3, SP3, CLK, ANTEX, OSB ve FCB okuyucuları Galileo'yu da okur. Her sistemin kendi alıcı saati/biasları ve kendi referans uydusu vardır; FCB kestirimi sistem başına en az 5 istasyon ister. Ayrıntılar: [GNSS belgesi](docs/GNSS.md).
 
 **v2.7:** RINEX 2.11 okuma; katı yer gelgiti (IERS 2010); OSB/FCB ürünlerinde eksik uydu saati düzeltildi (v2.6 hatası). `Data/network` istasyonları arayüzde otomatik listelenir; PPP-AR'de ürün yüklenmezse FCB'ler bu istasyonlardan kestirilip kullanılır. Referans ağdan (en az 5 istasyon) FCB kestirimi: Li & Zhang (2012) toplu çözüm, EKF ve EKF + ML kestiricileri, istasyon dışarıda bırakmalı doğrulama, GENFCB çıktısı (`--fcb-stations`). Ayrıntılar: [FCB belgesi](docs/FCB.md).
 

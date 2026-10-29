@@ -1,7 +1,9 @@
 """Float PPP with an iterated EKF: position, receiver clock, zenith wet delay, IF ambiguities.
 
-State: XYZ (m), receiver clock (m, white noise), optional ZWD (m, random walk),
-GPS01..32 ionosphere-free ambiguities (m, constant per arc).
+State: XYZ (m), receiver clock (m, white noise), optional ZWD (m, random walk), ionosphere-free
+ambiguities (m, constant per arc) for GPS G01..G32 and Galileo E01..E36 (gnss.slot), and a
+Galileo receiver clock (m, white noise; the GPS-Galileo system time offset and inter-system
+code bias are absorbed in it). GPS uses L1/L2, Galileo E1/E5a.
 """
 from dataclasses import dataclass
 import numpy as np
@@ -11,7 +13,8 @@ from gps_processing.processing.geometry import elevation
 from gps_processing.processing.cycle_slip import SlipDetector
 from gps_processing.processing.atmosphere import Atmosphere
 from gps_processing.processing.estimation import ExtendedKalmanFilter, FilterOptions
-from gps_processing.processing.ml.stochastic import ElevationModel, IF_FACTOR
+from gps_processing.processing.ml.stochastic import ElevationModel
+from gps_processing import gnss
 
 
 @dataclass
@@ -38,9 +41,10 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
     atmosphere = atmosphere or Atmosphere(approximate_xyz, physical=options.physical_corrections)
     tropo = 4 if options.estimate_troposphere else None
     first = 5 if tropo is not None else 4
-    dim = first+32
+    galileo_clock = first+gnss.SLOTS
+    dim = galileo_clock+1
     state = np.zeros(dim); state[:3] = approximate_xyz
-    variances = np.r_[[100.0**2]*3, 1e10, [atmosphere.initial_zwd_variance] if tropo is not None else [], [1e6]*32]
+    variances = np.r_[[100.0**2]*3, 1e10, [atmosphere.initial_zwd_variance] if tropo is not None else [], [1e6]*gnss.SLOTS, 1e10]
     if tropo is not None:
         state[tropo] = atmosphere.initial_zwd
     kf = ExtendedKalmanFilter(state, np.diag(variances))
@@ -52,15 +56,16 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
         frame = frame.copy()
         frame['elevation'] = elevation(kf.x[:3], frame[['x', 'y', 'z']].to_numpy())
         frame = frame[frame.elevation >= mask].reset_index(drop=True)
-        if len(frame) < (5 if tropo is not None else 4):
+        # One more unknown (Galileo clock) when both systems are tracked.
+        if len(frame) < (5 if tropo is not None else 4)+int((frame.sat > 100).any() and (frame.sat <= 100).any()):
             diagnostics.append(dict(epok=epoch, satellites=len(frame), status='yetersiz uydu'))
             continue
         kf.predict(options.process_noise(dim, epoch-last_epoch if last_epoch is not None else 0, tropo))
         last_epoch = epoch
-        kf.reset(3, 0.0, 1e10)
+        kf.reset([3, galileo_clock], 0.0, 1e10)
         slipped = detector.check(epoch, frame)
         for row in frame[frame.sat.isin(slipped)].itertuples():
-            kf.reset(first+int(row.sat)-1, row.Lc-row.Pc, 1e6)
+            kf.reset(first+gnss.slot(row.sat), row.Lc-row.Pc, 1e6)
             arc_id[int(row.sat)] = arc_id.get(int(row.sat), -1)+1
         ids = frame.sat.to_numpy(dtype=int)
         frame['arc_epochs'] = [detector.arc[s] for s in ids]
@@ -69,12 +74,14 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
         satellite_clock = C*frame.dt_sat.to_numpy()*1e-6
         if options.physical_corrections and 'relativity_m' in frame:
             satellite_clock += frame.relativity_m.to_numpy()
-        delays = atmosphere.slant(epoch, kf.x[:3], coords, frame.elevation.to_numpy())
+        delays = atmosphere.slant(epoch, kf.x[:3], coords, frame.elevation.to_numpy(), frame.sat.to_numpy())
         wet = delays.wet
         code_sigma, phase_sigma = weights.sigmas(frame)
-        base_noise = np.r_[(IF_FACTOR*code_sigma)**2, (IF_FACTOR*phase_sigma)**2]
+        factor = gnss.per_row(frame.sat.to_numpy(), 'if_factor')
+        base_noise = np.r_[(factor*code_sigma)**2, (factor*phase_sigma)**2]
         measured = np.r_[frame.Pc.to_numpy(), frame.Lc.to_numpy()]
-        amb = first+ids-1
+        amb = first+np.array([gnss.slot(s) for s in ids], int)
+        clock_column = np.where(ids > 100, galileo_clock, 3)
         groups = np.r_[np.arange(n), np.arange(n)]
 
         def model(current, inflation):
@@ -83,9 +90,9 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
             h = np.zeros((2*n, dim))
             h[:n, :3] = delta/distance[:, None]
             h[n:, :3] = h[:n, :3]
-            h[:, 3] = 1
+            h[np.arange(2*n), np.r_[clock_column, clock_column]] = 1
             h[n+np.arange(n), amb] = 1
-            code = distance+current[3]-satellite_clock+delays.common
+            code = distance+current[clock_column]-satellite_clock+delays.common
             if tropo is not None:
                 h[:, tropo] = np.r_[wet, wet]
                 code = code+wet*current[tropo]
@@ -106,8 +113,9 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
                               iono2_phase_mm=float(np.mean(np.abs(delays.phase)))*1e3,
                               sigma_x=sigma[0], sigma_y=sigma[1], sigma_z=sigma[2], satellites=n,
                               code_rms_m=code_rms, phase_rms_m=phase_rms, nis=report.nis, alpha=report.alpha,
-                              downweighted=report.downweighted, status='float'))
-        ambiguities.extend(dict(epok=epoch, sat=int(s), N3=kf.x[first+s-1], sigma_N3=float(np.sqrt(kf.P[first+s-1, first+s-1])),
+                              downweighted=report.downweighted, status='float',
+                              gps_satellites=int((ids <= 100).sum()), galileo_satellites=int((ids > 100).sum())))
+        ambiguities.extend(dict(epok=epoch, sat=int(s), N3=kf.x[first+gnss.slot(s)], sigma_N3=float(np.sqrt(kf.P[first+gnss.slot(s), first+gnss.slot(s)])),
                                 arc=arc_id.get(int(s), 0), elevation=float(e)) for s, e in zip(ids, frame.elevation))
         diagnostics.append(dict(epok=epoch, satellites=n, status='çözüldü', code_rms_m=code_rms,
                                 reset_satellites=','.join(map(str, slipped)), nis=report.nis,

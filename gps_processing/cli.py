@@ -5,7 +5,7 @@ from gps_processing.pipeline import run, compare, VARIANTS
 from gps_processing.processing.estimation.options import ESTIMATORS
 
 def main():
-    parser = argparse.ArgumentParser(description='TOGU GPS — modular experimental PPP / PPP-AR (EKF and machine-learning options)')
+    parser = argparse.ArgumentParser(description='TOGU GNSS — modular experimental PPP / PPP-AR for GPS and Galileo (EKF and machine-learning options)')
     parser.add_argument('--sp3-before', default='', help='previous-day SP3 (optional for single-day products)')
     parser.add_argument('--sp3-day', type=Path, required=True)
     parser.add_argument('--sp3-after', default='', help='next-day SP3 (optional)')
@@ -13,6 +13,8 @@ def main():
     parser.add_argument('--output', type=Path, default=Path('results'))
     parser.add_argument('--elevation-mask', type=float, default=10)
     parser.add_argument('--technique', choices=['PPP','PPP-AR/SDBS','PPP-AR/DCM','PPP-AR/IPC'], default='PPP')
+    parser.add_argument('--systems', nargs='+', choices=['G', 'E'], default=['G'],
+                        help='satellite systems: G = GPS (L1/L2), E = Galileo (E1/E5a; needs multi-GNSS SP3/CLK)')
     parser.add_argument('--ar-products', default='', help='normalized JSON product or Bias-SINEX code+phase OSB file (*.BIA)')
     parser.add_argument('--clock-file', default='', help='RINEX clock file (30 s / 5 s) replacing the SP3 clocks')
     parser.add_argument('--antex', default='', help='ANTEX file: satellite PCO, receiver ARP/PCO/PCV')
@@ -60,6 +62,7 @@ def main():
     names = args.__dict__.pop('compare')
     stations = args.__dict__.pop('fcb_stations')
     args.fcb_files = list(stations)
+    args.systems = tuple(args.systems)
     if args.reference_xyz is not None:
         args.reference_xyz = tuple(args.reference_xyz)
     progress = lambda n,m: print(f'[{n:3d}%] {m}')
