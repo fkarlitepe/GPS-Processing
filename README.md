@@ -6,6 +6,8 @@ GPS Precise Point Positioning (PPP) araştırma projesi.
 
 **v2.5:** Integer phase clock (IPC, Laurichesse) kullanıcı modeli eklendi (`--technique PPP-AR/IPC`). SDBS/DCM, Shi & Gao (2014) karşılaştırmasına göre gözden geçirildi; referans uydu değişiminde belirsizlikler artık sıfırlanmıyor, tamsayı kaydırmayla korunuyor. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
 
+**v2.7:** RINEX 2.11 okuma; katı yer gelgiti (IERS 2010); OSB/FCB ürünlerinde eksik uydu saati düzeltildi (v2.6 hatası). `Data/network` istasyonları arayüzde otomatik listelenir; PPP-AR'de ürün yüklenmezse FCB'ler bu istasyonlardan kestirilip kullanılır. Referans ağdan (en az 5 istasyon) FCB kestirimi: Li & Zhang (2012) toplu çözüm, EKF ve EKF + ML kestiricileri, istasyon dışarıda bırakmalı doğrulama, GENFCB çıktısı (`--fcb-stations`). Ayrıntılar: [FCB belgesi](docs/FCB.md).
+
 **v2.6:** Gerçek ürünler: RINEX CLK saatleri (`--clock-file`), Bias-SINEX kod+faz OSB (`--ar-products *.BIA`) ve GENFCB FCB (`*.fcb`) AR ürünleri, ANTEX PCO/PCV (`--antex`) ve faz wind-up; tek günlük SP3 desteği. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
 
 Ayrıca (Banville et al. 2008): Bias-SINEX DSB/OSB dosyasıyla C1C/C2L gibi kodlar C1W/C2W'ye hizalanır (`--code-biases`), alıcı milisaniye saat sıçramaları algılanıp fazdan giderilir (varsayılan açık, `--no-clock-jump-repair`).
@@ -37,7 +39,7 @@ python -m gps_processing \
   --sp3-before IGS0OPSFIN_20233260000_01D_15M_ORB.SP3 \
   --sp3-day IGS0OPSFIN_20233270000_01D_15M_ORB.SP3 \
   --sp3-after IGS0OPSFIN_20233280000_01D_15M_ORB.SP3 \
-  --rinex MADR00ESP_R_20233270000_01D_30S_MO.rnx \
+  --rinex madr3270.23o \
   --elevation-mask 10 \
   --output results
 ```
@@ -52,6 +54,7 @@ Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü a
 | Veri sözleşmeleri | `gps_processing/models.py` | Girdiler, doğrulama, gözlemler ve sonuçlar |
 | SP3 | `gps_processing/io/sp3.py` | GPS yörünge/saat okuma; gerçek tarihlerle gün birleştirme |
 | RINEX 3 | `gps_processing/io/rinex.py` | Başlığa göre gözlem alanları; L1/L2/L5 fazlarının metreye dönüşümü |
+| FCB kestirimi | `gps_processing/processing/fcb/` | Ağdan WL/NL UFO kestirimi (batch, EKF, EKF+ML), doğrulama, GENFCB yazımı |
 | Saat dosyası | `gps_processing/io/clock_rinex.py` | RINEX CLK 30 s / 5 s uydu saatleri |
 | AR ürünleri | `gps_processing/io/osb_products.py`, `io/fcb_products.py` | Bias-SINEX kod+faz OSB ve GENFCB FCB → IF kod/faz ve MW düzeltmeleri |
 | Anten modelleri | `gps_processing/io/antex.py`, `processing/antenna.py` | ANTEX PCO/PCV, nominal yaw, faz wind-up |
@@ -76,7 +79,7 @@ EKF seçenekleri ve yöntem karşılaştırması (CLI):
 
 ```bash
 python -m gps_processing --sp3-before Data/…260….SP3 --sp3-day Data/…270….SP3 --sp3-after Data/…280….SP3 \
-  --rinex Data/MADR00ESP_R_20233270000_01D_30S_MO.rnx --estimator ekf --ml-weighting \
+  --rinex Data/madr3270.23o --estimator ekf --ml-weighting \
   --reference-xyz 4849202.3940 -360328.9929 4114913.1862 \
   --compare 'Sequential LS (v2.0)' 'EKF' 'Adaptive + robust EKF' 'EKF + ML weighting' --output results
 ```

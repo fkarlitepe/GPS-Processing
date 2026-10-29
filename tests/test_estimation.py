@@ -251,7 +251,8 @@ class AnalysisAndPipelineTests(unittest.TestCase):
         from gps_processing.pipeline import compare
         sp3 = sorted((ROOT/'Data').glob('*.SP3'))
         with tempfile.TemporaryDirectory() as directory:
-            cfg = ProcessingConfig(*sp3, next((ROOT/'Data').glob('*.rnx')), output=Path(directory),
+            sample = sorted([*(ROOT/'Data').glob('*.rnx'), *(ROOT/'Data').glob('*.??o')])[0]
+            cfg = ProcessingConfig(*sp3, sample, output=Path(directory),
                                    reference_xyz=tuple(RECEIVER))
             table, results = compare(cfg, ['Sequential LS (v2.0)', 'EKF', 'EKF + ML weighting', 'AR · LAMBDA + PAR'])
             self.assertEqual(list(table.solution), ['Sequential LS (v2.0)', 'EKF', 'EKF + ML weighting'])

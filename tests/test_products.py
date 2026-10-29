@@ -62,7 +62,7 @@ class OSBTests(unittest.TestCase):
                                    'GBM0MGXRAP_20233270000_01D_30S_CLK.CLK')
             with self.assertRaisesRegex(ValueError, 'different'):
                 OSBProducts(write(directory, 'WUM0MGXRAP_x.BIA', bias_file(rows)), 'IPC', DAY, 'GBM0MGXRAP_x_CLK.CLK')
-        obs = pd.DataFrame([dict(epok=e, sat=s, signals='C1W L1W C2W L2W') for e in (0.0, 30.0, 60.0) for s in (5, 6)])
+        obs = pd.DataFrame([dict(epok=e, sat=s, signals='C1W L1W C2W L2W', dt_sat=0.0) for e in (0.0, 30.0, 60.0) for s in (5, 6)])
         out = products.apply(obs)
         self.assertEqual(len(out), 2)                                    # G06 and epoch 60 have no OSB
         self.assertEqual(products.meta['dropped_rows'], 4)
@@ -82,7 +82,7 @@ class FCBTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             products = FCBProducts(write(directory, 'x.fcb', text), 'SDBS', DAY)
         b1, b2 = -1.85653, -2.22089
-        obs = pd.DataFrame([dict(epok=0.0, sat=5, A4=LAMBDA_W*(7+b1-b2)), dict(epok=400.0, sat=5, A4=0.0)])
+        obs = pd.DataFrame([dict(epok=0.0, sat=5, A4=LAMBDA_W*(7+b1-b2), dt_sat=0.0), dict(epok=400.0, sat=5, A4=0.0, dt_sat=0.0)])
         out = products.apply(obs)
         self.assertEqual(len(out), 1)
         self.assertAlmostEqual((out.A4+out.mw_m)[0]/LAMBDA_W, 7.0, places=9)
@@ -132,7 +132,8 @@ PRODUCTS = DATA_DIR/'fcb'/'post_2023327'
 class RealDataTests(unittest.TestCase):
     def test_gbm_osb_wide_lanes_are_integer_up_to_receiver_bias(self):
         from gps_processing.io.rinex import read_rinex
-        obs = read_rinex(DATA_DIR/'MADR00ESP_R_20233270000_01D_30S_MO.rnx').combined
+        obs = read_rinex(DATA_DIR/'madr3270.23o').combined
+        obs = obs[obs.epok < 720].assign(dt_sat=0.0)   # first 12 min: one arc per satellite (WL is clock free)
         products = OSBProducts(PRODUCTS/'GBM0MGXRAP_20233270000_01D_30S_ABS.BIA', 'IPC', DAY)
         data = products.apply(obs)
         cycles = (data.A4+data.mw_m)/LAMBDA_W
@@ -146,3 +147,63 @@ class RealDataTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TideTests(unittest.TestCase):
+    def test_moon_and_tide_magnitudes(self):
+        from gps_processing.processing.tides import moon_position, solid_tide
+        when = datetime(2023, 11, 27)                                    # full Moon 09:16 UTC
+        moon, sun = moon_position([33360.0], when)[0], models.sun_position([33360.0], when)[0]
+        elongation = np.degrees(np.arccos(moon@sun/np.linalg.norm(moon)/np.linalg.norm(sun)))
+        self.assertGreater(elongation, 174)
+        self.assertTrue(356e6 < np.linalg.norm(moon) < 407e6)
+        equator = np.array([6378137.0, 0, 0])
+        radial = solid_tide(equator, np.arange(0, 86400, 600.0), DAY)@np.array([1.0, 0, 0])
+        self.assertTrue(0.2 < radial.max()-radial.min() < 0.6)
+
+    def test_correction_restores_range_to_mean_position(self):
+        from gps_processing.processing.tides import apply_solid_tide, solid_tide
+        receiver = np.array([4849202.394, -360328.993, 4114913.186])
+        satellite = receiver+np.array([1.2e7, 0.4e7, 1.8e7])
+        epochs = np.array([0.0, 21600.0])
+        moved = receiver+solid_tide(receiver, epochs, DAY)
+        ranges = np.linalg.norm(satellite-moved, axis=1)
+        combined = pd.DataFrame(dict(epok=epochs, sat=5, Pc=ranges, Lc=ranges))
+        satellites = pd.DataFrame(dict(epok=epochs, sat=5, x=satellite[0], y=satellite[1], z=satellite[2]))
+        out = apply_solid_tide(combined, satellites, receiver, DAY)
+        np.testing.assert_allclose(out.Pc, np.linalg.norm(satellite-receiver), atol=1e-4)
+
+
+class ProductClockTests(unittest.TestCase):
+    def test_osb_and_fcb_corrections_carry_the_satellite_clock(self):
+        # The AR solver has no satellite-clock term (JSON contract): code_m/phase_m must include c*dt_sat.
+        text = ('## FRACTIONAL CYCLE BIAS BY GENFCB v.1.6\n#s 3 L1 L2 L5\n'
+                '2023/11/23 00:00:00 2023/11/23 00:05:00  G05   0.00000 0.08586   0.00000 0.10825   0.00000 0.00000\n')
+        with tempfile.TemporaryDirectory() as directory:
+            products = FCBProducts(write(directory, 'x.fcb', text), 'SDBS', DAY)
+        out = products.apply(pd.DataFrame([dict(epok=0.0, sat=5, A4=0.0, dt_sat=-151.4)]))
+        self.assertAlmostEqual(out.code_m[0], C*1e-6*-151.4, places=6)
+        self.assertAlmostEqual(out.phase_m[0], C*1e-6*-151.4, places=6)
+        with self.assertRaisesRegex(ValueError, 'dt_sat'):
+            products.apply(pd.DataFrame([dict(epok=0.0, sat=5, A4=0.0)]))
+
+
+class ConsistencyTests(unittest.TestCase):
+    def test_mixed_centres_and_unverifiable_fcb(self):
+        from types import SimpleNamespace
+        from gps_processing.pipeline import product_consistency
+        base = dict(technique='PPP-AR/IPC', clock_file='GBM0MGXRAP_20233270000_01D_30S_CLK.CLK')
+        mixed = SimpleNamespace(**base, ar_products='GBM0MGXRAP_20233270000_01D_30S_ABS.BIA',
+                                sp3_day='COD0OPSFIN_20233270000_01D_05M_ORB.SP3')
+        self.assertIn('COD', product_consistency(mixed)[0][0])
+        same = SimpleNamespace(**base, ar_products='GBM0MGXRAP_20233270000_01D_30S_ABS.BIA',
+                               sp3_day='GBM0MGXRAP_20233270000_01D_05M_ORB.SP3')
+        self.assertEqual(product_consistency(same), ([], []))
+        with tempfile.TemporaryDirectory() as directory:
+            own = write(directory, 'own.fcb', '#s 3 L1 L2 L5\n# method ekf; orbit GBM0MGXRAP_20233270000_01D_05M_ORB.SP3; '
+                                              'clock GBM0MGXRAP_20233270000_01D_30S_CLK.CLK; stations A\n')
+            foreign = write(directory, 'jxf.fcb', '## FRACTIONAL CYCLE BIAS BY GENFCB v.1.6\n#s 3 L1 L2 L5\n')
+            self.assertEqual(product_consistency(SimpleNamespace(**{**vars(same), 'ar_products': str(own)})), ([], []))
+            other = SimpleNamespace(**{**vars(same), 'ar_products': str(own), 'sp3_day': 'COD0OPSFIN_20233270000_01D_05M_ORB.SP3'})
+            self.assertTrue(product_consistency(other)[0])
+            self.assertTrue(product_consistency(SimpleNamespace(**{**vars(same), 'ar_products': str(foreign)}))[1])

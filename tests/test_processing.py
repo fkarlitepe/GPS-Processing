@@ -53,11 +53,11 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(len(amb),18)
 
     def test_sample_readers(self):
-        obs=read_rinex(next((ROOT/'Data').glob('*.rnx')))
+        obs=read_rinex(sorted([*(ROOT/'Data').glob('*.rnx'),*(ROOT/'Data').glob('*.??o')])[0])
         self.assertEqual(obs.date.strftime('%Y-%m-%d'),'2023-11-23')
         self.assertEqual(len(obs.approximate_xyz),3)
         self.assertTrue(np.isfinite(obs.combined[['Pc','Lc','A4']]).all().all())
-        self.assertTrue({'c1c','l1c','c1w','l1w','c2x','l2x','c2w','l2w','c5x','l5x','c1x','l1x'} <= set(obs.raw))
+        self.assertTrue({'c1w','l1w','c2w','l2w'} <= set(obs.raw))
         paths=sorted((ROOT/'Data').glob('*.SP3'))
         orbit=combine_sp3(*paths)
         self.assertLess(orbit.epok.min(),0)
