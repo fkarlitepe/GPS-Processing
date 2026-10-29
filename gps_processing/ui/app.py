@@ -36,7 +36,7 @@ PLOTS = {
     'Mean slant TEC (TECU)': (['stec_tecu'], ['STEC'], False),
     '2nd-order ionosphere, IF phase (mm)': (['iono2_phase_mm'], ['|δ2|'], False),
     'NIS (consistency, expected 1)': (['nis'], ['NIS'], True),
-    'Number of satellites': (['satellites'], ['Satellites'], False),
+    'Number of satellites': (['satellites', 'gps_satellites', 'galileo_satellites'], ['All', 'GPS', 'Galileo'], False),
     'Code / phase RMS (m)': (['code_rms_m', 'phase_rms_m', 'residual_rms_m'], ['Code', 'Phase', 'AR residual'], True),
 }
 STAT_COLUMNS = [('solution', 'Method', 190), ('final_3d', 'Final 3D (m)', 90), ('rms_e', 'RMS E', 75), ('rms_n', 'RMS N', 75),
@@ -47,8 +47,9 @@ COMPARE_PLOTS = {'3D error (m)': ('error_3d', True), 'Horizontal error (m)': ('e
                  'NIS': ('nis', True), 'Formal σZ (m)': ('sigma_z', True)}
 
 
-def unknowns(technique, ekf, tropo, external_tropo=False):
+def unknowns(technique, ekf, tropo, external_tropo=False, systems=('G',)):
     """Plain-language list of the estimated parameters for the selected setup."""
+    both = len(systems) > 1
     zwd = (' · residual zenith wet delay (relative to the SINEX_TRO ZTD)' if external_tropo else ' · zenith wet delay (ZWD)') if tropo else ''
     states = {
         'PPP': f'receiver X, Y, Z · receiver clock offset{zwd} · one float ionosphere-free phase ambiguity per satellite',
@@ -56,6 +57,9 @@ def unknowns(technique, ekf, tropo, external_tropo=False):
         'PPP-AR/DCM': f'receiver X, Y, Z · code, phase and MW receiver clocks{zwd} · WL and N1 ambiguities',
         'PPP-AR/IPC': f'receiver X, Y, Z · receiver code and phase clocks{zwd} · N1 ambiguities (WL rounded beforehand with the averaged receiver WL bias)',
     }[technique]
+    if both:
+        states += (' · Galileo receiver clock (GPS–Galileo time offset and inter-system bias)' if technique in ('PPP', 'PPP-AR/SDBS')
+                   else ' · separate Galileo receiver clocks/biases') + ' · one reference satellite per system'
     how = 'prediction + measurement update at every epoch (EKF)' if ekf else 'sequential least squares over the epochs'
     return (f'Estimated unknowns: {states}.\nMethod: {how}. SP3 (satellite positions and clocks), AR and atmosphere products '
             'are inputs treated as known; they are not estimated, only interpolated to the epoch.')
@@ -93,7 +97,7 @@ def product_kind(name):
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('TOGU · GPS Processing')
+        self.title('TOGU · GNSS Processing')
         self.geometry('1180x880')
         self.minsize(900, 700)
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -115,7 +119,7 @@ class Application(tk.Tk):
         style.map('Start.TButton', background=[('disabled', '#9fb3c8'), ('active', '#185a92')])
         shell = ttk.Frame(self, padding=22)
         shell.pack(fill='both', expand=True)
-        ttk.Label(shell, text='TOGU / GPS Processing', style='Title.TLabel').pack(anchor='w')
+        ttk.Label(shell, text='TOGU / GNSS Processing', style='Title.TLabel').pack(anchor='w')
         ttk.Label(shell, text='Orbits · Observations · EKF estimation · PPP-AR · Machine learning     |     Modular research workspace').pack(anchor='w', pady=(4,16))
         bar = ttk.Frame(shell)
         bar.pack(side='bottom', fill='x', pady=(10,0))              # packed first: never pushed off-screen
@@ -145,7 +149,7 @@ class Application(tk.Tk):
         if self.logo is not None:
             ttk.Label(about_row, image=self.logo).pack(side='left', anchor='n', padx=(0,24))
         about = ttk.Frame(about_row); about.pack(side='left', anchor='n', fill='x', expand=True)
-        ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGPS Precise Point Positioning — v2.7\n\n'
+        ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGNSS Precise Point Positioning (GPS + Galileo) — v2.8\n\n'
                   'Float PPP and PPP-AR user models (SDBS — Ge et al., DCM — Collins, integer phase clock — Laurichesse);\niterated extended Kalman filter '
                   '(process noise, ZWD estimation, IGG-III robust update, adaptive fading), LAMBDA decorrelation and partial AR,\n'
                   'a stochastic model learned from residuals (gradient-boosted trees) and an AR validator trained by Monte Carlo.\n'
@@ -174,7 +178,7 @@ class Application(tk.Tk):
         return outer, inner
 
     def build_inputs(self, inputs):
-        for key,label in [('rinex','RINEX 2.11 / 3 · GPS observations'),('antex','Antenna model · ANTEX (optional)'),('output','Output folder')]:
+        for key,label in [('rinex','RINEX 2.11 / 3 · GNSS observations'),('antex','Antenna model · ANTEX (optional)'),('output','Output folder')]:
             field = FileField(inputs,label,directory=key=='output')
             field.pack(fill='x', pady=10)
             self.fields[key] = field
@@ -213,6 +217,17 @@ class Application(tk.Tk):
         self.technique.bind('<<ComboboxSelected>>', lambda event: self.update_states())
         self.technique_info = tk.StringVar()
         self.row(self.rows[method], ttk.Label(method, textvariable=self.technique_info, wraplength=950, foreground=MUTED), anchor='w', pady=(6,2))
+        row = self.row(self.rows[method], ttk.Frame(method), fill='x', pady=(4,2))
+        ttk.Label(row, text='Satellite systems', width=30).pack(side='left')
+        self.gps, self.galileo = tk.BooleanVar(value=True), tk.BooleanVar(value=False)
+        for text, var in (('GPS (L1/L2)', self.gps), ('Galileo (E1/E5a)', self.galileo)):
+            ttk.Checkbutton(row, text=text, variable=var, command=self.update_states).pack(side='left', padx=(8,16))
+        self.galileo_hint = self.row(self.rows[method], ttk.Label(method, wraplength=950, foreground='#a4511d', justify='left', text=
+                 'Galileo needs: E1 + E5a observations in the RINEX file; a multi-GNSS SP3 and CLK that contain Galileo '
+                 '(e.g. *MGX* products — IGS final GPS orbits do not); for PPP-AR an AR product with Galileo biases '
+                 '(OSB with E1/E5a, FCB with Galileo records) or at least 5 reference stations tracking Galileo in section 7. '
+                 'Each system gets its own receiver clock and reference satellite. The sequential v2.0 baseline is GPS only.'),
+                 anchor='w', pady=(0,4))
         orbit_types = [('SP3 orbits', '*.sp3 *.SP3 *.sp3.gz *.SP3.gz *.eph *.EPH'), ('All files', '*')]
         clock_types = [('RINEX clocks', '*.clk *.CLK *.clk_30s *.CLK_30S *.clk.gz *.CLK.gz'), ('All files', '*')]
         bias_types = [('Bias-SINEX', '*.bsx *.BSX *.bia *.BIA *.bsx.gz *.BSX.gz'), ('All files', '*')]
@@ -397,8 +412,10 @@ class Application(tk.Tk):
             self.ml_weighting.set(False)
         tropo = ekf and self.estimate_troposphere.get()
         self.technique_info.set(TECHNIQUES[technique])
-        self.unknowns.set(unknowns(technique, ekf, tropo, bool(self.fields['troposphere'].value.get().strip())))
+        self.unknowns.set(unknowns(technique, ekf, tropo, bool(self.fields['troposphere'].value.get().strip()), self.systems()))
         hidden = set()
+        if not self.galileo.get():
+            hidden.add(self.galileo_hint)
         if not ar:
             hidden |= {self.ar_field, self.ar_hint, self.ar_section, self.fcb_section}     # FCBs only matter for PPP-AR
         if not ekf:
@@ -476,8 +493,13 @@ class Application(tk.Tk):
     def remove_fcb(self):
         for index in reversed(self.fcb.curselection()): self.fcb.delete(index)
 
+    def systems(self):
+        return tuple(s for s, var in (('G', self.gps), ('E', self.galileo)) if var.get())
+
     def build_config(self):
         values={k:field.value.get().strip() for k,field in self.fields.items()}
+        if not self.systems():
+            raise ValueError('Select at least one satellite system (GPS and/or Galileo) in Positioning technique.')
         if self.technique.get() != 'PPP' and not values['ar_products'] and self.fcb.size() < 5:
             raise ValueError('PPP-AR needs ambiguity-resolution products.\n\n'
                              '• Section 1 (Positioning technique): select an FCB / OSB product with Browse (Data/fcb), or\n'
@@ -489,7 +511,7 @@ class Application(tk.Tk):
         reference = self.reference.get().replace(',', ' ').split()
         if reference and len(reference) != 3:
             raise ValueError('Enter X Y Z for the reference coordinate.')
-        config=ProcessingConfig(**values,elevation_mask=self.mask.get(),technique=self.technique.get(),fcb_files=list(self.fcb.get(0,'end')),
+        config=ProcessingConfig(**values,elevation_mask=self.mask.get(),technique=self.technique.get(),fcb_files=list(self.fcb.get(0,'end')), systems=self.systems(),
             fcb_method=self.fcb_method.get(), fcb_interval=self.fcb_interval.get(),
             estimator=ESTIMATORS[self.estimator.get()], dynamics=self.dynamics.get(), position_noise=self.position_noise.get(),
             estimate_troposphere=self.estimate_troposphere.get(), troposphere_noise=self.troposphere_noise.get(),

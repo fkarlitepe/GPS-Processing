@@ -6,6 +6,7 @@ filter propagates them through ``combination_covariance``.
 """
 import numpy as np
 from gps_processing.constants import F1, F2
+from gps_processing import gnss
 from .learners import GradientBoostingRegressor
 
 IF_FACTOR = np.sqrt(F1**4+F2**4)/(F1**2-F2**2)
@@ -53,7 +54,8 @@ class LearnedVarianceModel:
         models = []
         for column, floor in (('code_res', 0.01), ('phase_res', 1e-4)):
             # Residuals are ionosphere-free; convert to raw-signal equivalent before learning.
-            target = np.log((frame[column].to_numpy(dtype=float)/IF_FACTOR)**2+floor**2)
+            factor = gnss.per_row(frame.sat.to_numpy(), 'if_factor') if 'sat' in frame else IF_FACTOR
+            target = np.log((frame[column].to_numpy(dtype=float)/factor)**2+floor**2)
             models.append(GradientBoostingRegressor(seed=seed).fit(x, target))
         return cls(fallback, *models, fill=fill, samples=len(frame))
 

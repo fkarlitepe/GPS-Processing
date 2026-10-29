@@ -64,7 +64,8 @@ class Atmosphere:
             raise ValueError(f'SINEX_TRO ({self.tro.site}) does not cover the observation epochs.')
         return float(np.interp(epoch, t, self.tro.ztd))-self.model.zhd
 
-    def slant(self, epoch, receiver, satellites, elevation_deg):
+    def slant(self, epoch, receiver, satellites, elevation_deg, sats=None):
+        """``sats``: integer ids, needed only for the frequency-dependent second-order term."""
         receiver = np.asarray(receiver, dtype=float)
         n = len(satellites)
         dry, wet = self.model.mapping(elevation_deg)
@@ -89,8 +90,10 @@ class Atmosphere:
             direction = receiver-np.asarray(satellites)
             direction /= np.linalg.norm(direction, axis=1, keepdims=True)
             valid = np.isfinite(stec)
+            from gps_processing import gnss
+            f1, f2 = gnss.frequencies(np.asarray(sats if sats is not None else np.ones(n), int))
             code[valid], phase[valid] = ionosphere.ionosphere_free_second_order(
-                stec[valid], ionosphere.dipole_field(ipp[valid]), direction[valid])
+                stec[valid], ionosphere.dipole_field(ipp[valid]), direction[valid], f1[valid], f2[valid])
         return SlantDelays(common, wet, zwd0, code, phase, stec)
 
     def describe(self):

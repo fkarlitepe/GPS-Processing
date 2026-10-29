@@ -1,4 +1,4 @@
-"""RINEX clock (3.00/3.04) reader: GPS satellite clocks ('AS Gnn' records).
+"""RINEX clock (3.00/3.04) reader: GPS and Galileo satellite clocks ('AS Gnn' / 'AS Enn' records).
 
 High-rate clocks (30 s, 5 s) replace the 15 min SP3 clocks: a linear interpolation of 15 min
 samples leaves decimetre-level clock errors, too large for narrow-lane ambiguity resolution.
@@ -7,6 +7,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from gps_processing.io.ionex import read_text
+from gps_processing import gnss
 
 
 def read_clock_rinex(path, reference):
@@ -20,14 +21,14 @@ def read_clock_rinex(path, reference):
     for line in lines:
         if line[60:].startswith('ANALYSIS CENTER'):
             agency = line[:3].strip()
-        elif line.startswith('AS G'):
+        elif line.startswith('AS ') and line[3:4] in gnss.SYSTEMS:
             fields = line[8:].split()
             y, mo, d, h, mi = (int(v) for v in fields[:5])
             seconds = float(fields[5])
             epoch = (datetime(y, mo, d, h, mi)-reference).total_seconds()+seconds
-            rows.append((int(line[4:6]), epoch, float(fields[7])*1e6))
+            rows.append((gnss.sat_id(line[3], int(line[4:6])), epoch, float(fields[7])*1e6))
     if not rows:
-        raise ValueError(f'{path}: no GPS satellite clock (AS G..) records.')
+        raise ValueError(f'{path}: no GPS/Galileo satellite clock (AS G.. / AS E..) records.')
     frame = pd.DataFrame(rows, columns=['sat', 'epok', 'time']).drop_duplicates(['sat', 'epok'])
     frame.attrs['agency'] = agency
     return frame.sort_values(['sat', 'epok']).reset_index(drop=True)
@@ -42,13 +43,13 @@ class Clocks:
 
     def __call__(self, sat, epoch):
         if sat not in self.groups:
-            raise ValueError(f'G{sat:02d}: no satellite clock in the clock file.')
+            raise ValueError(f'{gnss.label(sat)}: no satellite clock in the clock file.')
         t, value = self.groups[sat]
         k = np.searchsorted(t, epoch)
         if k < len(t) and abs(t[k]-epoch) < 1e-6:
             return value[k]
         if k == 0 or k == len(t) or t[k]-t[k-1] > self.max_gap:
-            raise ValueError(f'G{sat:02d}: epoch {epoch:.1f} s is outside or in a gap of the clock file.')
+            raise ValueError(f'{gnss.label(sat)}: epoch {epoch:.1f} s is outside or in a gap of the clock file.')
         w = (epoch-t[k-1])/(t[k]-t[k-1])
         return (1-w)*value[k-1]+w*value[k]
 

@@ -1,20 +1,26 @@
-"""RINEX 3 and RINEX 2.11 GPS reader. Header observation types determine fixed-width fields.
+"""RINEX 3 and RINEX 2.11 reader for GPS (L1/L2) and Galileo (E1/E5a).
 
-RINEX 2 types are renamed to their RINEX 3 equivalents so the rest of the processing is shared:
-P1 -> C1W, C1 -> C1C, P2 -> C2W, C2 -> C2X, L1/L2/S1/S2 serve both tracking modes (L1W/L1C,
-L2W/L2X). With P1 present the code/phase pair is therefore C1W/L1W, otherwise C1C/L1C.
+RINEX 2 types are renamed to their RINEX 3 equivalents so the rest of the processing is shared.
+GPS: P1 -> C1W, C1 -> C1C, P2 -> C2W, C2 -> C2X, L1/L2/S1/S2 serve both tracking modes (L1W/L1C,
+L2W/L2X); with P1 present the code/phase pair is C1W/L1W, otherwise C1C/L1C.
+Galileo (RINEX 2 has no tracking attribute): C1/L1 -> C1X/L1X, C5/L5 -> C5X/L5X (data+pilot).
+Satellites are integer ids (gps_processing.gnss): GPS n -> n, Galileo n -> 100+n.
 """
 from pathlib import Path
 from datetime import datetime
 import numpy as np
 import pandas as pd
 from gps_processing.constants import C, F1, F2, F5
+from gps_processing import gnss
 from gps_processing.models import Observations
 from gps_processing.processing.combinations import ionosphere_free, melbourne_wubbena
 
 RINEX2_NAMES = {'P1': ['c1w'], 'C1': ['c1c'], 'L1': ['l1w', 'l1c'], 'S1': ['s1w', 's1c'],
                 'P2': ['c2w'], 'C2': ['c2x'], 'L2': ['l2w', 'l2x'], 'S2': ['s2w', 's2x'],
                 'C5': ['c5x'], 'L5': ['l5x'], 'S5': ['s5x']}
+RINEX2_GALILEO = {'C1': ['c1x'], 'L1': ['l1x'], 'S1': ['s1x'], 'C5': ['c5x'], 'L5': ['l5x'], 'S5': ['s5x']}
+# Preferred tracking attributes per system and band (first available code/phase pair is used).
+TRACKING = {('G', '1'): 'wcxpsl', ('G', '2'): 'wcxlsp', ('E', '1'): 'xcb', ('E', '5'): 'xqi'}
 
 
 def read_header(lines):
@@ -62,15 +68,17 @@ def rinex3_rows(lines, end, types):
             date = datetime(y, m, d)
             first_date = first_date or date
             epoch = (date-first_date).total_seconds() + h*3600 + minute*60 + second
-        elif line.startswith('G') and epoch is not None:
+        elif line[:1] in gnss.SYSTEMS and line[:1] in types and epoch is not None:
+            system = line[0]
             payload = line[3:]
             while i < len(lines) and lines[i].startswith('   '):
                 payload = payload.ljust(((len(payload)+15)//16)*16) + lines[i][3:]
                 i += 1
-            if not 1 <= int(line[1:3]) <= 32:
-                raise ValueError('GPS PRN değeri 1–32 aralığında olmalı.')
-            row = {'sat': int(line[1:3]), 'epok': epoch, 'epoch_reset': flag == 1}
-            for k, name in enumerate(types['G']):
+            prn = int(line[1:3])
+            if not 1 <= prn <= gnss.SYSTEMS[system]['count']:
+                raise ValueError(f'{system} PRN değeri geçersiz: {line[:3]}.')
+            row = {'sat': gnss.sat_id(system, prn), 'epok': epoch, 'epoch_reset': flag == 1}
+            for k, name in enumerate(types[system]):
                 cell = payload[k*16:k*16+14].strip()
                 row[name.lower()] = float(cell.replace('D', 'E')) if cell else np.nan
                 lli = payload[k*16+14:k*16+15].strip()
@@ -114,15 +122,16 @@ def rinex2_rows(lines, end, types):
             payload = ''.join(lines[i+k][:80].ljust(80) for k in range(per_satellite) if i+k < len(lines))
             i += per_satellite
             system = sat[0] if sat[0] != ' ' else 'G'
-            if system != 'G':
+            if system not in gnss.SYSTEMS:
                 continue
-            row = {'sat': int(sat[1:]), 'epok': epoch, 'epoch_reset': flag == 1}
+            mapping = RINEX2_NAMES if system == 'G' else RINEX2_GALILEO
+            row = {'sat': gnss.sat_id(system, int(sat[1:])), 'epok': epoch, 'epoch_reset': flag == 1}
             for k, name in enumerate(names):
-                if name not in RINEX2_NAMES:
+                if name not in mapping:
                     continue
                 cell = payload[k*16:k*16+14].strip()
                 value = float(cell.replace('D', 'E')) if cell else np.nan
-                for target in RINEX2_NAMES[name]:
+                for target in mapping[name]:
                     row[target] = value
                 lli = payload[k*16+14:k*16+15].strip()
                 if name[0] == 'L' and lli.isdigit() and int(lli) & 1:
@@ -138,39 +147,48 @@ def read_rinex(path):
         raise ValueError('Yalnız RINEX 2.11 ve RINEX 3 gözlem dosyaları destekleniyor.')
     if end is None or xyz is None or xyz.shape != (3,) or not np.isfinite(xyz).all() or np.linalg.norm(xyz) < 1:
         raise ValueError('RINEX başlığı veya yaklaşık XYZ koordinatı eksik/geçersiz.')
-    if 'G' not in types:
-        raise ValueError('GPS gözlem türleri bulunamadı.')
+    if not set(types) & set(gnss.SYSTEMS):
+        raise ValueError('GPS/Galileo gözlem türleri bulunamadı.')
     rows, first_date = (rinex2_rows if version[0] == '2' else rinex3_rows)(lines, end, types)
     raw = pd.DataFrame(rows)
     if raw.empty:
-        raise ValueError('Dosyada GPS gözlemi bulunamadı.')
+        raise ValueError('Dosyada GPS/Galileo gözlemi bulunamadı.')
+    raw['system'] = gnss.systems_of(raw.sat.to_numpy())
     for name in raw.columns:
         if name.startswith('l'):
             frequency = {'1': F1, '2': F2, '5': F5}.get(name[1])
             if frequency:
                 raw[name] *= C/frequency
-    # Select matching code/phase tracking signals per row, prefer original W signals.
-    def pair(band):
-        codes = [f'c{band}{s}' for s in ('w', 'c', 'x', 'p', 's', 'l')]
+    # Select matching code/phase tracking signals per row and system (GPS: W first; Galileo: X first).
+    def pair(system, band):
+        rows = raw.system.eq(system).to_numpy()
         p, l = pd.Series(np.nan, index=raw.index), pd.Series(np.nan, index=raw.index)
         snr = pd.Series(np.nan, index=raw.index)
         selected = pd.Series('', index=raw.index)
-        for name in codes:
-            phase = 'l' + name[1:]
+        for attribute in TRACKING[system, band]:
+            name, phase = f'c{band}{attribute}', f'l{band}{attribute}'
             if name in raw and phase in raw:
-                valid = p.isna() & raw[name].gt(0) & raw[phase].notna() & raw[phase].ne(0)
+                valid = rows & p.isna() & raw[name].gt(0) & raw[phase].notna() & raw[phase].ne(0)
                 p.loc[valid], l.loc[valid] = raw.loc[valid, name], raw.loc[valid, phase]
                 if 's' + name[1:] in raw:
                     snr.loc[valid] = raw.loc[valid, 's' + name[1:]]
                 selected.loc[valid] = name.upper() + ' ' + phase.upper()
         return p, l, selected, snr
-    p1, l1, signal1, snr1 = pair('1')
-    p2, l2, signal2, snr2 = pair('2')
+    parts = {}
+    for system, info in gnss.SYSTEMS.items():
+        for k, band in enumerate(info['bands']):
+            parts[system, k] = pair(system, band)
+    merged = {}
+    for k in (0, 1):
+        series = [parts[s, k] for s in gnss.SYSTEMS]
+        merged[k] = tuple(series[0][i].where(raw.system.eq('G'), series[1][i]) for i in range(4))
+    (p1, l1, signal1, snr1), (p2, l2, signal2, snr2) = merged[0], merged[1]
+    f1, f2 = gnss.frequencies(raw.sat.to_numpy())
     combined = raw[['sat', 'epok', 'epoch_reset']].copy()
     combined['signals'] = signal1 + ' ' + signal2
-    combined['Pc'] = ionosphere_free(p1, p2)
-    combined['Lc'] = ionosphere_free(l1, l2)
-    combined['A4'] = melbourne_wubbena(p1, p2, l1, l2)
+    combined['Pc'] = ionosphere_free(p1, p2, f1, f2)
+    combined['Lc'] = ionosphere_free(l1, l2, f1, f2)
+    combined['A4'] = melbourne_wubbena(p1, p2, l1, l2, f1, f2)
     combined['travel_code'] = p1
     # Geometry-free phase (metres) for cycle-slip checks; SNR (dB-Hz) is an ML feature.
     combined['GF'] = l1 - l2
@@ -179,6 +197,6 @@ def read_rinex(path):
     combined['epoch_reset'] |= prior_signals.notna() & combined['signals'].ne(prior_signals)
     combined = combined.replace([np.inf, -np.inf], np.nan).dropna(subset=['Pc', 'Lc', 'A4'])
     if combined.empty:
-        raise ValueError('Geçerli çift frekanslı GPS kod/faz çifti bulunamadı.')
+        raise ValueError('Geçerli çift frekanslı GPS/Galileo kod/faz çifti bulunamadı.')
     return Observations(xyz, raw, combined.reset_index(drop=True), first_date, marker,
                         antenna_type=antenna, antenna_delta=delta)

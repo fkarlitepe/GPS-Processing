@@ -66,8 +66,9 @@ def dipole_field(position):
     return (DIPOLE_RADIUS/r)**3*(3*(unit@DIPOLE_NT)[:, None]*unit-DIPOLE_NT)*1e-9
 
 
-def ionosphere_free_second_order(stec_tecu, field, direction):
-    """IF code and phase second-order delays (m). ``direction``: unit vectors satellite -> receiver."""
+def ionosphere_free_second_order(stec_tecu, field, direction, f1=F1, f2=F2):
+    """IF code and phase second-order delays (m). ``direction``: unit vectors satellite -> receiver;
+    ``f1``/``f2`` per row for Galileo E1/E5a."""
     s = 7527*C*np.einsum('ij,ij->i', field, direction)*stec_tecu*TECU
-    scale = F1*F2*(F1+F2)
+    scale = f1*f2*(f1+f2)
     return -s/scale, s/(2*scale)

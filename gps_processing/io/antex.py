@@ -32,7 +32,7 @@ def read_antex(path, satellites=True, receiver=None):
             current = None
         elif label == 'TYPE / SERIAL NO':
             name, serial = line[:20].strip(), line[20:40].strip()
-            is_satellite = serial[:1] == 'G' and serial[1:3].isdigit() and len(serial) == 3
+            is_satellite = serial[:1] in 'GE' and serial[1:3].isdigit() and len(serial) == 3
             wanted = (satellites and is_satellite) or line[:20] in receivers
             current = Antenna(name, serial) if wanted else None
         elif current is None:
@@ -53,7 +53,7 @@ def read_antex(path, satellites=True, receiver=None):
         elif frequency and line[3:8] == 'NOAZI':
             current.pcv[frequency] = np.array([float(v) for v in line[8:].split()])*1e-3
         elif label == 'END OF ANTENNA':
-            if current.serial[:1] == 'G' and len(current.serial) == 3:
+            if current.serial[:1] in 'GE' and current.serial[1:3].isdigit() and len(current.serial) == 3:
                 out.setdefault(current.serial, []).append(current)
             else:
                 out[current.name] = current
@@ -62,7 +62,9 @@ def read_antex(path, satellites=True, receiver=None):
 
 
 def satellite_antenna(antennas, prn, date):
-    for item in antennas.get(f'G{prn:02d}', []):
+    from gps_processing import gnss
+    key = gnss.label(prn)                     # integer satellite id (GPS n, Galileo 100+n)
+    for item in antennas.get(key, []):
         if item.valid_from <= date < item.valid_until:
             return item
-    raise ValueError(f'G{prn:02d}: no ANTEX satellite entry valid on {date:%Y-%m-%d}.')
+    raise ValueError(f'{key}: no ANTEX satellite entry valid on {date:%Y-%m-%d}.')

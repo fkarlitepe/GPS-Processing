@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from gps_processing.processing.ar.models import BETA, LAMBDA_N, LAMBDA_W
 from gps_processing.processing.fcb import core
+from gps_processing import gnss
 
 MIN_STATIONS = 5
 
@@ -50,7 +51,7 @@ def wide_lane_rows(name, ambiguities, min_epochs, wl_interval):
     for (sat, arc), g in ambiguities.dropna(subset=['A4']).groupby(['sat', 'arc']):
         if len(g) < min_epochs:
             continue
-        cycles = g.A4.to_numpy(float)/LAMBDA_W
+        cycles = g.A4.to_numpy(float)/gnss.constants(gnss.system_of(sat))['lambda_w']
         middle = float(g.epok.median())
         rows.append(dict(station=name, sat=int(sat), arc=int(arc), block=int(middle//wl_interval), epok=float(middle//wl_interval*wl_interval),
                          value=float(cycles.mean()), sigma=max(float(cycles.std(ddof=1)/np.sqrt(len(cycles))), 0.02),
@@ -66,13 +67,14 @@ def narrow_lane_rows(name, ambiguities, wide_lanes, interval, max_sigma, min_epo
             continue
         g = g.sort_values('epok').assign(arc_epochs=np.arange(1, len(g)+1))
         g = g[g.arc_epochs >= min_epochs]
+        k = gnss.constants(gnss.system_of(sat))
         for block, b in g.groupby(g.epok//interval):
             last = b.iloc[-1]
-            sigma = float(last.sigma_N3)/LAMBDA_N
+            sigma = float(last.sigma_N3)/k['lambda_n']
             if sigma > max_sigma:
                 continue
             rows.append(dict(station=name, sat=int(sat), arc=int(arc), block=int(block), epok=float(block*interval),
-                             value=(float(last.N3)-BETA*wide_lanes[sat, arc])/LAMBDA_N, sigma=sigma,
+                             value=(float(last.N3)-k['beta']*wide_lanes[sat, arc])/k['lambda_n'], sigma=sigma,
                              elevation=float(last.elevation), arc_epochs=int(last.arc_epochs)))
     return rows
 
@@ -92,27 +94,35 @@ def integer_wide_lanes(result, rows, gate):
     return out
 
 
-def l1_l2(nl, wl):
-    """GENFCB L1/L2 FCBs (cycles) from narrow- and wide-lane satellite UFOs."""
-    b1 = nl-BETA/LAMBDA_N*wl
+def l1_l2(nl, wl, system='G'):
+    """GENFCB FCBs (cycles) of the two carriers (GPS L1/L2, Galileo E1/E5a) from NL and WL UFOs."""
+    k = gnss.constants(system)
+    b1 = nl-k['beta']/k['lambda_n']*wl
     return b1, b1-wl
 
 
-def write_fcb(path, nl, wl, date, interval, comment):
-    lines = ['## FRACTIONAL CYCLE BIAS BY TOGU GPS-PROCESSING FCB ESTIMATION', '#s 3 L1 L2 L5',
+def write_fcb(path, parts, date, interval, comment):
+    """``parts``: {system: (nl, wl)}. GPS second carrier in the L2 column, Galileo E5a in L5."""
+    lines = ['## FRACTIONAL CYCLE BIAS BY TOGU GNSS-PROCESSING FCB ESTIMATION', '#s 3 L1 L2 L5',
              f'# {comment}', '# UNIT: CYCLE',
              '#      ARC-START           ARC-END       SAT    L1-FCB  L1-STD    L2-FCB  L2-STD    L5-FCB  L5-STD']
     origin = pd.Timestamp(date)
-    for r in nl.satellite.sort_values(['epok', 'sat']).itertuples():
-        w = wl.lookup(r.sat, np.array([r.epok]))[0]
-        if not np.isfinite(w):
-            continue
-        sigma_w = float(wl.satellite[wl.satellite.sat == r.sat].sigma.iloc[-1])
-        b1, b2 = l1_l2(r.ufo, w)
-        s1 = float(np.hypot(r.sigma, BETA/LAMBDA_N*sigma_w)) if np.isfinite(r.sigma) else 0.0
-        s2 = float(np.hypot(s1, sigma_w)) if np.isfinite(sigma_w) else s1
-        start, end = origin+pd.Timedelta(seconds=r.epok), origin+pd.Timedelta(seconds=r.epok+interval)
-        lines.append(f'{start:%Y/%m/%d %H:%M:%S} {end:%Y/%m/%d %H:%M:%S}  G{r.sat:02d} {b1:9.5f} {s1:7.5f} {b2:9.5f} {s2:7.5f}   0.00000 0.00000')
+    records = []
+    for system, (nl, wl) in parts.items():
+        k = gnss.constants(system)
+        for r in nl.satellite.itertuples():
+            w = wl.lookup(r.sat, np.array([r.epok]))[0]
+            if not np.isfinite(w):
+                continue
+            sigma_w = float(wl.satellite[wl.satellite.sat == r.sat].sigma.iloc[-1])
+            b1, b2 = l1_l2(r.ufo, w, system)
+            s1 = float(np.hypot(r.sigma, k['beta']/k['lambda_n']*sigma_w)) if np.isfinite(r.sigma) else 0.0
+            s2 = float(np.hypot(s1, sigma_w)) if np.isfinite(sigma_w) else s1
+            second = (f'{b2:9.5f} {s2:7.5f}   0.00000 0.00000' if system == 'G' else f'{0:9.5f} {0:7.5f} {b2:9.5f} {s2:7.5f}')
+            records.append((r.epok, r.sat, b1, s1, second))
+    for epok, sat, b1, s1, second in sorted(records, key=lambda x: (x[0], x[1])):
+        start, end = origin+pd.Timedelta(seconds=epok), origin+pd.Timedelta(seconds=epok+interval)
+        lines.append(f'{start:%Y/%m/%d %H:%M:%S} {end:%Y/%m/%d %H:%M:%S}  {gnss.label(sat)} {b1:9.5f} {s1:7.5f} {second}')
     Path(path).write_text('\n'.join(lines)+'\n')
 
 
@@ -137,45 +147,72 @@ def estimate_fcb(config, stations, methods=core.METHODS, interval=900.0, wl_inte
         names.add(name)
         date = day
         data.append((name, ambiguities))
-    wl_table = pd.DataFrame([row for name, a in data for row in wide_lane_rows(name, a, min_epochs, wl_interval)])
-    wl_table.to_csv(output/'wide_lane_ambiguities.csv', index=False)
-    if wl_table.empty or wl_table.station.nunique() < 2:
-        raise ValueError('Too few wide-lane arcs: stations need longer common observation arcs.')
-    summary, results = {'stations': sorted(names), 'interval_s': interval, 'methods': {}}, {}
+    wl_all = pd.DataFrame([row for name, a in data for row in wide_lane_rows(name, a, min_epochs, wl_interval)])
+    wl_all.to_csv(output/'wide_lane_ambiguities.csv', index=False)
+    systems = list(getattr(config, 'systems', ('G',)))
+    summary, results = {'stations': sorted(names), 'interval_s': interval, 'methods': {}, 'systems': {}}, {}
+    usable = []
+    for system in systems:
+        table = wl_all[gnss.systems_of(wl_all.sat.to_numpy()) == system] if len(wl_all) else wl_all
+        count = table.station.nunique() if len(table) else 0
+        summary['systems'][system] = dict(stations=int(count), used=count >= MIN_STATIONS)
+        if count >= MIN_STATIONS:
+            usable.append(system)
+    if not usable:
+        raise ValueError('FCB estimation needs at least 5 stations tracking each system: '
+                         + ', '.join(f'{gnss.NAMES[s]} {summary["systems"][s]["stations"]}' for s in systems))
     for k, method in enumerate(methods):
         progress(60+int(35*k/len(methods)), f'FCB estimation: {method}')
-        wl = core.estimate(wl_table, method, gate)
-        wide = integer_wide_lanes(wl, wl_table, gate)
-        nl_rows = [row for name, a in data
-                   for row in narrow_lane_rows(name, a, {(s, arc): n for (st, s, arc), n in wide.items() if st == name},
-                                               interval, max_nl_sigma, min_epochs)]
-        nl_table = pd.DataFrame(nl_rows)
-        nl_table.to_csv(output/f'narrow_lane_ambiguities_{method.replace("+", "_")}.csv', index=False)
-        if nl_table.empty or nl_table.station.nunique() < 2:
-            raise ValueError('No converged narrow-lane ambiguities (float sigma below the limit); use longer observation files.')
-        nl = core.estimate(nl_table, method, gate)
         slug = method.replace('+', '_')
-        write_fcb(output/f'fcb_{slug}.fcb', nl, wl, date, interval,
-                  f'method {method}; orbit {Path(config.sp3_day).name}; clock {Path(config.clock_file).name if config.clock_file else "SP3"}; stations {",".join(sorted(names))}')
-        nl.satellite.assign(lane='NL').pipe(lambda f: pd.concat([f, wl.satellite.assign(lane='WL')])).to_csv(output/f'satellite_ufo_{slug}.csv', index=False)
-        pd.concat([nl.receiver.assign(lane='NL'), wl.receiver.assign(lane='WL')]).to_csv(output/f'receiver_ufo_{slug}.csv', index=False)
-        entry = dict(wl_arcs=len(wl_table), wl_fixed=len(wide), nl_ambiguities=len(nl_table),
-                     nl_per_station={str(k): int(v) for k, v in nl_table.station.value_counts().items()},
-                     nl_fixed_fraction=float(nl.rows.fixed.mean()) if len(nl.rows) else 0.0,
-                     nl_residual_rms=float(np.sqrt(np.mean(nl.rows.residual[nl.rows.fixed]**2))) if nl.rows.fixed.any() else np.nan,
-                     datum=nl.datum, **nl.info)
-        if validate:
-            # Wide lane: one block per day, so the receiver part is removed over the whole day.
-            wl_loo = core.leave_one_out(wl_table.assign(block=0, epok=0.0), method, gate)
-            if len(wl_loo):
-                entry.update(wl_loo_rms_cycles=float(wl_loo.rms_cycles.mean()), wl_loo_within_015=float(wl_loo.within_015.mean()))
-            loo = core.leave_one_out(nl_table, method, gate)
+        parts, entry, satellites_out, receivers_out, loo_all = {}, {}, [], [], []
+        for system in usable:
+            wl_table = wl_all[gnss.systems_of(wl_all.sat.to_numpy()) == system]
+            wl = core.estimate(wl_table, method, gate)
+            wide = integer_wide_lanes(wl, wl_table, gate)
+            nl_rows = [row for name, a in data
+                       for row in narrow_lane_rows(name, a[gnss.systems_of(a.sat.to_numpy()) == system],
+                                                   {(s, arc): n for (st, s, arc), n in wide.items() if st == name},
+                                                   interval, max_nl_sigma, min_epochs)]
+            nl_table = pd.DataFrame(nl_rows)
+            nl_table.to_csv(output/f'narrow_lane_ambiguities_{slug}_{system}.csv', index=False)
+            if nl_table.empty or nl_table.station.nunique() < 2:
+                entry[system] = dict(wl_arcs=len(wl_table), wl_fixed=len(wide), error='no converged narrow-lane ambiguities')
+                continue
+            nl = core.estimate(nl_table, method, gate)
+            parts[system] = (nl, wl)
+            satellites_out += [nl.satellite.assign(lane='NL', system=system), wl.satellite.assign(lane='WL', system=system)]
+            receivers_out += [nl.receiver.assign(lane='NL', system=system), wl.receiver.assign(lane='WL', system=system)]
+            part = dict(wl_arcs=len(wl_table), wl_fixed=len(wide), nl_ambiguities=len(nl_table),
+                        nl_per_station={str(key): int(v) for key, v in nl_table.station.value_counts().items()},
+                        nl_fixed_fraction=float(nl.rows.fixed.mean()) if len(nl.rows) else 0.0,
+                        nl_residual_rms=float(np.sqrt(np.mean(nl.rows.residual[nl.rows.fixed]**2))) if nl.rows.fixed.any() else np.nan,
+                        datum=nl.datum, **nl.info)
+            if validate:
+                # Wide lane: one block per day, so the receiver part is removed over the whole day.
+                wl_loo = core.leave_one_out(wl_table.assign(block=0, epok=0.0), method, gate)
+                if len(wl_loo):
+                    part.update(wl_loo_rms_cycles=float(wl_loo.rms_cycles.mean()), wl_loo_within_015=float(wl_loo.within_015.mean()))
+                loo = core.leave_one_out(nl_table, method, gate)
+                if len(loo):
+                    loo_all.append(loo.assign(system=system))
+                    part.update(loo_rms_cycles=float(loo.rms_cycles.mean()), loo_within_015=float(loo.within_015.mean()),
+                                loo_within_025=float(loo.within_025.mean()))
+            entry[system] = part
+            results.setdefault(method, {})[system] = dict(wl=wl, nl=nl, nl_table=nl_table, wl_table=wl_table)
+        if not parts:
+            raise ValueError('No converged narrow-lane ambiguities (float sigma below the limit); use longer observation files.')
+        write_fcb(output/f'fcb_{slug}.fcb', parts, date, interval,
+                  f'method {method}; orbit {Path(config.sp3_day).name}; clock {Path(config.clock_file).name if config.clock_file else "SP3"}; '
+                  f'systems {",".join(parts)}; stations {",".join(sorted(names))}')
+        pd.concat(satellites_out).to_csv(output/f'satellite_ufo_{slug}.csv', index=False)
+        pd.concat(receivers_out).to_csv(output/f'receiver_ufo_{slug}.csv', index=False)
+        if loo_all:
+            loo = pd.concat(loo_all)
             loo.to_csv(output/f'validation_{slug}.csv', index=False)
-            if len(loo):
-                entry.update(loo_rms_cycles=float(loo.rms_cycles.mean()), loo_within_015=float(loo.within_015.mean()),
-                             loo_within_025=float(loo.within_025.mean()))
+            entry.update(loo_rms_cycles=float(np.average(loo.rms_cycles, weights=loo.ambiguities)),
+                         loo_within_015=float(np.average(loo.within_015, weights=loo.ambiguities)),
+                         loo_within_025=float(np.average(loo.within_025, weights=loo.ambiguities)))
         summary['methods'][method] = entry
-        results[method] = dict(wl=wl, nl=nl, nl_table=nl_table, wl_table=wl_table)
     scored = {m: e['loo_rms_cycles'] for m, e in summary['methods'].items() if 'loo_rms_cycles' in e}
     summary['best_method'] = min(scored, key=scored.get) if scored else None
     (output/'summary.json').write_text(json.dumps(summary, indent=2, default=float))

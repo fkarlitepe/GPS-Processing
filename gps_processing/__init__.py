@@ -1,2 +1,2 @@
-"""TOGU GPS processing: explicit data flow, reusable scientific modules."""
-__version__ = "2.7.0"
+"""TOGU GNSS processing (GPS + Galileo): explicit data flow, reusable scientific modules."""
+__version__ = "2.8.0"
