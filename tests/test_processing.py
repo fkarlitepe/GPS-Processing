@@ -77,3 +77,15 @@ class ProcessingTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError): config.validate()
 
 if __name__ == '__main__': unittest.main()
+
+
+class RunDirectoryTests(unittest.TestCase):
+    def test_one_folder_per_process(self):
+        from datetime import datetime
+        from gps_processing.pipeline import run_directory
+        now = datetime(2026, 10, 29, 14, 35, 12)
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = run_directory(directory, now), run_directory(directory, now)
+            self.assertEqual(first.name, '2026_302_143512')
+            self.assertEqual(second.name, '2026_302_143512_2')
+            self.assertTrue(first.is_dir() and second.is_dir())
