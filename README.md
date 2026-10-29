@@ -111,7 +111,7 @@ FCB referans dosya alanı korunmuştur; FCB kestirimi henüz uygulanmadı. PPP-A
 
 ## Çıktılar
 
-Seçilen klasörde `results.xlsx`, `summary.json` ve her tablo için CSV bulunur:
+Her işlem, seçilen çıktı klasörünün (varsayılan `results/`) altında kendi klasörüne yazılır: `<yıl>_<yılın günü>_<SSDDss>` (işlemin başlama zamanı, örneğin `results/2026_302_143512/`; aynı saniyede ikinci işlem `_2` eki alır). Karşılaştırmalar bu klasörün `comparison/`, FCB kestirimi `fcb/` alt klasörüne yazılır; işlemler birbirine karışmaz. Klasörde `results.xlsx`, `summary.json` ve her tablo için CSV bulunur:
 
 - `combine_sp3`, `obs3_gps`, `mw_ion_gps`, `xyz0_apprx`
 - `result_gps`, `sat3_df`, `cll` (öncül), `cll_result` (son kovaryans)

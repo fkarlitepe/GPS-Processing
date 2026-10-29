@@ -61,6 +61,19 @@ def unknowns(technique, ekf, tropo, external_tropo=False):
             'are inputs treated as known; they are not estimated, only interpolated to the epoch.')
 
 
+LOGO = Path(__file__).with_name('assets')/'togu_logo.jpg'
+
+
+def load_logo(height):
+    """Tokat Gaziosmanpaşa University logo scaled to ``height`` px; None if Pillow or the file is missing."""
+    try:
+        from PIL import Image, ImageTk
+        image = Image.open(LOGO)
+        return ImageTk.PhotoImage(image.resize((round(image.width*height/image.height), height), Image.LANCZOS))
+    except (ImportError, OSError):
+        return None
+
+
 def product_kind(name):
     """'ionosphere' for IONEX (*.INX, legacy *.yyI), 'troposphere' for SINEX_TRO (*.TRO, *.zpd), 'code_biases' for Bias-SINEX (*.BSX, *.BIA), 'clock_file' (*.CLK), 'antex' (*.ATX); gz allowed."""
     name = re.sub(r'\.(GZ|Z)$', '', name.upper())
@@ -98,10 +111,20 @@ class Application(tk.Tk):
         style.configure('Title.TLabel', font=('DejaVu Sans',22,'bold'))
         style.configure('Metric.TLabel', font=('DejaVu Sans', 10, 'bold'))
         style.configure('TButton', padding=7)
+        style.configure('Start.TButton', padding=(18,10), font=('DejaVu Sans', 11, 'bold'), foreground='#ffffff', background='#1f6fb2')
+        style.map('Start.TButton', background=[('disabled', '#9fb3c8'), ('active', '#185a92')])
         shell = ttk.Frame(self, padding=22)
         shell.pack(fill='both', expand=True)
         ttk.Label(shell, text='TOGU / GPS Processing', style='Title.TLabel').pack(anchor='w')
         ttk.Label(shell, text='Orbits · Observations · EKF estimation · PPP-AR · Machine learning     |     Modular research workspace').pack(anchor='w', pady=(4,16))
+        bar = ttk.Frame(shell)
+        bar.pack(side='bottom', fill='x', pady=(10,0))              # packed first: never pushed off-screen
+        self.button = ttk.Button(bar, text='▶  Start processing  (F5)', command=self.start, style='Start.TButton')
+        self.button.pack(side='right', padx=(12,0))
+        status_box = ttk.Frame(bar); status_box.pack(side='left', fill='x', expand=True)
+        self.status = ttk.Label(status_box, text='Ready — make the selections, then press Start processing'); self.status.pack(anchor='w', pady=(0,4))
+        self.progress = ttk.Progressbar(status_box, maximum=100); self.progress.pack(fill='x')
+        self.bind('<F5>', lambda event: self.start())
         self.tabs = ttk.Notebook(shell)
         self.tabs.pack(fill='both', expand=True)
         inputs = ttk.Frame(self.tabs, padding=18)
@@ -117,6 +140,11 @@ class Application(tk.Tk):
         self.build_settings(settings)
         self.build_output(output)
         self.build_comparison(comparison)
+        about_row = ttk.Frame(about); about_row.pack(anchor='nw', fill='x')
+        self.logo = load_logo(160)
+        if self.logo is not None:
+            ttk.Label(about_row, image=self.logo).pack(side='left', anchor='n', padx=(0,24))
+        about = ttk.Frame(about_row); about.pack(side='left', anchor='n', fill='x', expand=True)
         ttk.Label(about,text='Tokat Gaziosmanpaşa University\nDr. Furkan KARLITEPE\nfurkan.karlitepe@gop.edu.tr\n\nGPS Precise Point Positioning — v2.7\n\n'
                   'Float PPP and PPP-AR user models (SDBS — Ge et al., DCM — Collins, integer phase clock — Laurichesse);\niterated extended Kalman filter '
                   '(process noise, ZWD estimation, IGG-III robust update, adaptive fading), LAMBDA decorrelation and partial AR,\n'
@@ -127,9 +155,6 @@ class Application(tk.Tk):
                   'Solid-earth and ocean tides and eclipse attitude are not modelled, so results are for research only;\n'
                   'no geodetic accuracy is guaranteed. Details: docs/PPP_AR.md, docs/EKF_ML.md and docs/ATMOSPHERE.md.\n\n'
                   'The original sources are preserved in the legacy/ folder.',justify='left',wraplength=950).pack(anchor='w')
-        self.status = ttk.Label(shell,text='Ready'); self.status.pack(anchor='w',pady=(12,4))
-        self.progress=ttk.Progressbar(shell,maximum=100); self.progress.pack(fill='x')
-        self.button=ttk.Button(shell,text='Start processing →',command=self.start); self.button.pack(anchor='e',pady=(10,0))
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.update_states()
         self.after(100,self.poll)
@@ -509,12 +534,12 @@ class Application(tk.Tk):
 
     def start(self):
         if not self.products_confirmed(): return
-        self.launch(lambda config, progress: ('done', run(config, progress), config.output), 2)
+        self.launch(lambda config, progress: (lambda result: ('done', result, result.output_dir))(run(config, progress)), 2)
 
     def start_comparison(self):
         if not self.products_confirmed(): return
         names = [name for name, var in self.variant_vars.items() if var.get()]
-        self.launch(lambda config, progress: ('compared', *compare(config, names, progress), config.output), 3)
+        self.launch(lambda config, progress: (lambda out: ('compared', *out, out[0].attrs['output']))(compare(config, names, progress)), 3)
 
     def start_fcb(self):
         stations = list(self.fcb.get(0, 'end'))
@@ -525,7 +550,8 @@ class Application(tk.Tk):
             from dataclasses import replace
             from gps_processing.processing.fcb.network import estimate_fcb
             methods = METHODS if config.fcb_method == 'all' else (config.fcb_method,)
-            config = replace(config, technique='PPP', ar_products='')
+            from gps_processing.pipeline import run_directory
+            config = replace(config, technique='PPP', ar_products='', output=run_directory(config.output))
             return ('fcb', estimate_fcb(config, stations, methods, config.fcb_interval, progress=progress))
         self.launch(job, 1)
 
