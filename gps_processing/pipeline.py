@@ -58,15 +58,22 @@ def load_antex(path, receiver):
 
 
 def antenna_models(config, obs, satellites):
-    """Phase wind-up (EKF and AR; the sequential v2.0 baseline stays unchanged) and, with an
-    ANTEX file, satellite PCO plus receiver ARP/PCO/PCV. Applied per variant on copies."""
+    """Phase wind-up and solid Earth tide (EKF and AR; the sequential v2.0 baseline stays
+    unchanged) and, with an ANTEX file, satellite PCO plus receiver ARP/PCO/PCV. Applied per
+    variant on copies."""
     baseline = config.technique == 'PPP' and config.estimator == 'sequential'
-    if baseline or not (config.phase_windup or config.antex):
+    if baseline or not (config.phase_windup or config.antex or config.solid_tides):
         return obs, satellites, {}
-    from gps_processing.processing.antenna import apply_antenna_models
-    antennas = load_antex(str(config.antex), obs.antenna_type.ljust(20)[:20]) if config.antex else None
-    combined, satellites, info = apply_antenna_models(obs.combined, satellites, obs.approximate_xyz, obs.date,
-                                                      antennas, obs.antenna_type, obs.antenna_delta, config.phase_windup)
+    combined, info = obs.combined, {}
+    if config.phase_windup or config.antex:
+        from gps_processing.processing.antenna import apply_antenna_models
+        antennas = load_antex(str(config.antex), obs.antenna_type.ljust(20)[:20]) if config.antex else None
+        combined, satellites, info = apply_antenna_models(combined, satellites, obs.approximate_xyz, obs.date,
+                                                          antennas, obs.antenna_type, obs.antenna_delta, config.phase_windup)
+    if config.solid_tides:
+        from gps_processing.processing.tides import apply_solid_tide
+        combined = apply_solid_tide(combined, satellites, obs.approximate_xyz, obs.date)
+        info['solid_earth_tide'] = 'IERS 2010 degree 2 (tide-free)'
     return replace(obs, combined=combined), satellites, info
 
 
@@ -133,6 +140,9 @@ def estimate(config, orbit, obs, satellites, progress=None):
         result.settings.update(atmosphere.describe())
     if products is not None:
         result.ar_metadata = {k: v for k, v in products.meta.items() if k != 'records'}
+        # Which service the user chose (file-name prefix, e.g. JXF, GBM, COD, GRG): kept for comparisons.
+        result.ar_metadata['service'] = Path(config.ar_products).name[:3].upper()
+        result.ar_metadata['product_file'] = str(config.ar_products)
         result.ar_metadata.update(ratio=config.ar_ratio, min_epochs=config.ar_min_epochs, max_std_cycles=config.ar_max_std,
                                   integer_method=config.integer_method, success_rate=config.ar_success_rate,
                                   validation=config.ar_validation)
@@ -152,6 +162,38 @@ def reference_coordinate(config, result):
     return result.positions.iloc[-1][['x', 'y', 'z']].to_numpy(dtype=float), 'son epok çözümü'
 
 
+def centre(path):
+    """Analysis-centre prefix of an IGS long file name (GBM0MGXRAP_... -> GBM), else ''."""
+    name = Path(str(path)).name
+    return name[:3].upper() if len(name) > 20 and name[3:4].isdigit() and '_' in name else ''
+
+
+def product_consistency(config):
+    """(errors, warnings) about mixing analysis centres between the AR product and SP3/CLK."""
+    errors, warnings = [], []
+    if config.technique == 'PPP' or not config.ar_products:
+        return errors, warnings
+    product, orbit, clock = Path(config.ar_products), Path(str(config.sp3_day)).name, Path(str(config.clock_file)).name if config.clock_file else ''
+    if is_osb(product):
+        owner = centre(product)
+        for kind, name in (('SP3', orbit), ('CLK', clock)):
+            if owner and centre(name) and centre(name) != owner:
+                errors.append(f'OSB product {product.name} is from {owner}, but the {kind} file {name} is from {centre(name)}. '
+                              f'Use the {owner} SP3 and CLK files.')
+    elif product.suffix.lower() == '.fcb':
+        from gps_processing.io.ionex import read_text
+        header = ' '.join(line for line in read_text(product)[:6] if line.startswith('#'))
+        if 'orbit ' in header and 'clock ' in header:
+            for kind, name in (('orbit', orbit), ('clock', clock or 'SP3')):
+                if f'{kind} {name}' not in header:
+                    errors.append(f'{product.name} was estimated with a different {kind} product than {name} (see its header).')
+        else:
+            warnings.append(f'{product.name} does not state which orbit/clock it was estimated with. Its narrow-lane FCBs are '
+                            f'only valid with that product; make sure {orbit} and {clock or "the SP3 clocks"} are the ones its '
+                            'provider used.')
+    return errors, warnings
+
+
 def is_osb(path):
     """Bias-SINEX (*.BIA, *.BSX, gz) AR products carry code and phase OSBs; others are JSON."""
     import re
@@ -162,11 +204,33 @@ def settings(config):
     return {k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()}
 
 
+def network_products(config, progress):
+    """PPP-AR without a product file: estimate FCBs from the reference stations (Li & Zhang 2012)
+    with the same orbit/clock/models and use the file of the best method (leave-one-station-out)."""
+    if config.technique == 'PPP' or config.ar_products or len(config.fcb_files) < 5:
+        return config, None
+    from gps_processing.processing.fcb.core import METHODS
+    from gps_processing.processing.fcb.network import estimate_fcb
+    methods = METHODS if config.fcb_method == 'all' else (config.fcb_method,)
+    step = lambda p, m: progress(int(0.5*p), f'[FCB] {m}')
+    out = estimate_fcb(replace(config, technique='PPP', ar_products=''), config.fcb_files, methods, config.fcb_interval, progress=step)
+    best = out['summary']['best_method'] or methods[0]
+    path = out['output']/f'fcb_{best.replace("+", "_")}.fcb'
+    progress(50, f'PPP-AR with the estimated FCBs ({best}): {path.name}')
+    return replace(config, ar_products=str(path)), dict(out['summary'], product=str(path))
+
+
 def run(config, progress=None):
     progress = progress or (lambda percent, message: None)
     config.validate()
+    errors, _ = product_consistency(config)
+    if errors:
+        raise ValueError('\n'.join(errors))
+    config, network = network_products(config, progress)
     orbit, obs, satellites = prepare(config, progress)
     result = estimate(config, orbit, obs, satellites, progress)
+    if network is not None:
+        result.ar_metadata['fcb_estimation'] = network
     progress(90, 'Writing CSV, Excel and summary outputs')
     export_result(result, config.output)
     progress(100, 'Processing finished')
@@ -180,6 +244,7 @@ def compare(config, names, progress=None):
     names = [n for n in names if config.technique != 'PPP' or n not in AR_ONLY]
     if not names:
         raise ValueError('Karşılaştırma için en az bir uygun yöntem seçin (AR varyantları PPP-AR tekniği ister).')
+    config, _ = network_products(config, progress)
     orbit, obs, satellites = prepare(config, progress)
     results, rows = {}, []
     for i, name in enumerate(names):

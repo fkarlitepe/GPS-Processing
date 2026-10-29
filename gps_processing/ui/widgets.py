@@ -7,16 +7,18 @@ PALETTE = ['#1f6fb2', '#d9822b', '#2e9e5b', '#c23b4a', '#7b5ea7', '#8c6d1f', '#3
 
 
 class FileField(ttk.Frame):
-    def __init__(self, parent, label, directory=False):
+    def __init__(self, parent, label, directory=False, initial=None, filetypes=None):
         super().__init__(parent)
-        self.directory = directory
+        self.directory, self.initial, self.filetypes = directory, initial, filetypes
         self.value = tk.StringVar()
         ttk.Label(self, text=label, width=25).pack(side='left')
         ttk.Entry(self, textvariable=self.value).pack(side='left', fill='x', expand=True, padx=8)
         ttk.Button(self, text='Browse…', command=self.browse, width=8).pack(side='left')
     def browse(self):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        path = filedialog.askdirectory() if self.directory else filedialog.askopenfilename(initialdir=str(DATA_DIR))
+        start = self.initial if self.initial is not None and self.initial.is_dir() else DATA_DIR
+        options = dict(initialdir=str(start), filetypes=self.filetypes) if self.filetypes else dict(initialdir=str(start))
+        path = filedialog.askdirectory() if self.directory else filedialog.askopenfilename(**options)
         if path and not self.directory:
             try:
                 path = str(require_data_file(path))

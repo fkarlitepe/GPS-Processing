@@ -46,6 +46,7 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
     kf = ExtendedKalmanFilter(state, np.diag(variances))
     detector = SlipDetector(gf_jump=getattr(config, 'gf_slip_m', 0.05))
     positions, ambiguities, diagnostics, residuals = [], [], [], []
+    arc_id = {}                       # increments at every arc restart (used by FCB estimation)
     last_epoch, correction = None, np.zeros(dim)
     for epoch, frame in data.groupby('epok', sort=True):
         frame = frame.copy()
@@ -60,6 +61,7 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
         slipped = detector.check(epoch, frame)
         for row in frame[frame.sat.isin(slipped)].itertuples():
             kf.reset(first+int(row.sat)-1, row.Lc-row.Pc, 1e6)
+            arc_id[int(row.sat)] = arc_id.get(int(row.sat), -1)+1
         ids = frame.sat.to_numpy(dtype=int)
         frame['arc_epochs'] = [detector.arc[s] for s in ids]
         n = len(frame)
@@ -105,7 +107,8 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
                               sigma_x=sigma[0], sigma_y=sigma[1], sigma_z=sigma[2], satellites=n,
                               code_rms_m=code_rms, phase_rms_m=phase_rms, nis=report.nis, alpha=report.alpha,
                               downweighted=report.downweighted, status='float'))
-        ambiguities.extend(dict(epok=epoch, sat=int(s), N3=kf.x[first+s-1]) for s in ids)
+        ambiguities.extend(dict(epok=epoch, sat=int(s), N3=kf.x[first+s-1], sigma_N3=float(np.sqrt(kf.P[first+s-1, first+s-1])),
+                                arc=arc_id.get(int(s), 0), elevation=float(e)) for s, e in zip(ids, frame.elevation))
         diagnostics.append(dict(epok=epoch, satellites=n, status='çözüldü', code_rms_m=code_rms,
                                 reset_satellites=','.join(map(str, slipped)), nis=report.nis,
                                 alpha=report.alpha, downweighted=report.downweighted))

@@ -59,8 +59,10 @@ class FCBProducts:
             ok = (epochs >= g.start.to_numpy()[k]) & (epochs < g.end.to_numpy()[k])
             rows = result.index.get_indexer(index)
             b1[rows[ok]], b2[rows[ok]] = g.b1.to_numpy()[k[ok]], g.b2.to_numpy()[k[ok]]
-        result['code_m'] = 0.0
-        result['phase_m'] = -(IF1*C/F1*b1+IF2*C/F2*b2)
+        from gps_processing.io.osb_products import satellite_clock_m
+        clock = satellite_clock_m(result)                  # c*dt_sat, as in the JSON product contract
+        result['code_m'] = clock
+        result['phase_m'] = clock-(IF1*C/F1*b1+IF2*C/F2*b2)
         result['mw_m'] = -LAMBDA_W*(b1-b2)
         complete = np.isfinite(b1) & np.isfinite(b2)
         self.meta['dropped_rows'] = int((~complete).sum())
