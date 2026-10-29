@@ -31,8 +31,11 @@ class ProcessingConfig:
     clock_file: str = ''          # RINEX CLK (30 s / 5 s) replacing the SP3 clocks
     antex: str = ''               # ANTEX: satellite PCO, receiver ARP/PCO/PCV
     phase_windup: bool = True     # EKF and PPP-AR only (sequential v2.0 baseline unchanged)
+    solid_tides: bool = True      # IERS 2010 solid Earth tide, same scope as the wind-up
     repair_clock_jumps: bool = True
-    fcb_files: list = field(default_factory=list)
+    fcb_files: list = field(default_factory=list)   # reference-station RINEX (>= 5) for FCB estimation
+    fcb_method: str = 'all'                         # batch / ekf / ekf+ml / all (best by leave-one-out)
+    fcb_interval: float = 900.0                     # narrow-lane block length, s
 
     ar_products: str = ''
     ar_ratio: float = 3.0
@@ -90,8 +93,12 @@ class ProcessingConfig:
                 raise ValueError('Referans koordinat X, Y, Z (metre, ECEF) olmalı.')
         if not np.isfinite([self.ar_ratio,self.ar_max_std]).all() or self.ar_ratio <= 1 or self.ar_max_std <= 0 or self.ar_min_epochs < 2:
             raise ValueError('AR ratio > 1, standart sapma > 0 ve minimum epok >= 2 olmalı.')
-        if self.technique != 'PPP' and (not self.ar_products or not Path(self.ar_products).is_file()):
-            raise ValueError('PPP-AR için yönteme uyumlu saat/bias ürünü gerekli: normalize JSON veya Bias-SINEX OSB (*.BIA).')
+        if self.fcb_method not in ('all', 'batch', 'ekf', 'ekf+ml') or not self.fcb_interval > 0:
+            raise ValueError('FCB yöntemi all/batch/ekf/ekf+ml, blok süresi pozitif olmalı.')
+        network = len(self.fcb_files) >= 5
+        if self.technique != 'PPP' and not network and (not self.ar_products or not Path(self.ar_products).is_file()):
+            raise ValueError('PPP-AR için AR ürünü gerekli: FCB (*.fcb) / OSB (*.BIA) / JSON ürününü kendiniz seçin '
+                             f'ya da FCB kestirimi için en az 5 referans istasyon RINEX dosyası verin (şu an {len(self.fcb_files)}).')
         for extra in [self.ar_products, self.ionosphere, self.troposphere, self.code_biases, self.clock_file, self.antex, *self.fcb_files]:
             if extra:
                 require_data_file(extra)
@@ -99,8 +106,7 @@ class ProcessingConfig:
         if self.technique != 'PPP' and is_osb(self.ar_products) and not (self.clock_file and self.antex and self.phase_windup):
             raise ValueError('OSB (Bias-SINEX) AR ürünleri aynı merkezin saat dosyası (RINEX CLK), ANTEX ve faz '
                              'wind-up ile kullanılmalı: faz biasları bu modellerle kestirilmiştir.')
-        if self.fcb_files:
-            raise NotImplementedError('FCB kestirimi henüz uygulanmadı. Referans listesini boş bırakın.')
+        # fcb_files: reference-station RINEX files for FCB estimation (processing.fcb.network).
         if (self.ionosphere or self.troposphere) and self.technique == 'PPP' and self.estimator == 'sequential':
             raise ValueError('IONEX/SINEX_TRO dosyaları EKF kestiricisiyle kullanılır; Sıralı LS v2.0 temel çözümüdür.')
         if not 0 <= self.elevation_mask < 90:

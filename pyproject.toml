@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "togu-gps-processing"
-version = "2.6.0"
+version = "2.7.0"
 description = "Modular experimental GPS PPP / PPP-AR processing with EKF and machine learning options"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.21", "pandas>=1.4", "openpyxl>=3.0", "scikit-learn>=1.6", "scipy>=1.13"]

@@ -68,7 +68,7 @@ python -m gps_processing \
   --sp3-before IGS0OPSFIN_20233260000_01D_15M_ORB.SP3 \
   --sp3-day IGS0OPSFIN_20233270000_01D_15M_ORB.SP3 \
   --sp3-after IGS0OPSFIN_20233280000_01D_15M_ORB.SP3 \
-  --rinex MADR00ESP_R_20233270000_01D_30S_MO.rnx \
+  --rinex madr3270.23o \
   --technique PPP-AR/SDBS --ar-products products/sdbs.json \
   --ar-min-epochs 20 --ar-ratio 3 --ar-max-std 0.15 \
   --output results/sdbs
@@ -131,6 +131,14 @@ PPP-ARISEN (Zhang et al. 2023) karşılaştırmasında en büyük eksik gerçek 
 - Faz artıklarının RMS'i: IGS 15 dk SP3 saatleriyle 52 mm, GBM 30 s CLK ile 9.7 mm, ANTEX + wind-up ile 8.4 mm.
 - WL kesirleri (alıcı biası çıkarıldıktan sonra, σ < 0.3 çevrim olan arc'lar): GBM OSB ≤ 0.07, WHU OSB ≤ 0.08, jxf FCB ≤ 0.09 çevrim. Düzeltmesiz MW'de 0.33 çevrime kadar. İşaretler bu testle doğrulandı (`tests/test_products.py`, GBM seti varsa çalışır).
 - Örnek RINEX dosyası yalnız ilk 12 dakikayı (25 epok) içerir. Bu sürede IPC WL'leri çözüyor, ancak N1 başarı oranı ~0.001 olduğundan kapılar fix'e izin vermiyor (beklenen davranış). N1/NL doğrulaması için tam günlük gözlem gerekir.
+
+## Düzeltme (v2.7): OSB/FCB ürünlerinde uydu saati
+
+AR çözücüsünde uydu saati terimi yoktur; JSON ürün sözleşmesinde `code_m` ve `phase_m` uydu saatini (c·dt_sat) içerir. v2.6'daki OSB ve FCB okuyucuları yalnız biasları yazıp saati eklemiyordu; bu yüzden bu ürünlerle PPP-AR konumu kilometre düzeyinde hatalıydı (v2.6'daki 12 dakikalık kontrol yalnız çözüm durumuna bakmıştı). Artık iki okuyucu da `c·dt_sat` değerini (CLK veya SP3'ten enterpole edilmiş) ekler ve saat sütunu yoksa hata verir; ilk 12 dakikada üç AR modeli float PPP ile aynı konumu (~0.8 m) veriyor.
+
+## Katı yer gelgiti (v2.7)
+
+`processing/tides.py`: IERS 2010 denk. 7.5, derece 2 (h2 = 0.6078, l2 = 0.0847), Ay (Montenbruck & Gill düşük duyarlıklı seri) ve Güneş; kalıcı kısım dahil, yani IGS'in gelgitsiz (tide-free) koordinat sistemi. Radyal etki Madrid'de ±17 cm, ekvatorda +27/−11 cm. EKF ve AR çözümlerinde varsayılan açık (`--no-solid-tides`); sıralı v2.0 temel çözümü değişmez. Okyanus yüklemesi uygulanmaz.
 
 ## Mevcut sınırlar ve sonraki bilimsel adımlar
 

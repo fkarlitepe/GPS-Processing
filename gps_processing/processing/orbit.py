@@ -29,7 +29,7 @@ def interpolate_satellites(orbit, observations, clocks=None):
             continue                     # satellite absent from the orbit product (e.g. unhealthy)
         frame = groups[obs.sat]
         t = frame.epok.to_numpy()
-        if obs.epok < t[0] or obs.epok > t[-1]+60:
+        if obs.epok < t[0] or obs.epok > t[-1]+30:
             if len(t) and t[0] <= 0 and t[-1] >= 86400:
                 raise ValueError('Gözlem zamanı SP3 kapsamı dışında.')
             continue                     # single-day orbit: epochs past its last node are dropped

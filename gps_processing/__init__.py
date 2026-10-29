@@ -1,2 +1,2 @@
 """TOGU GPS processing: explicit data flow, reusable scientific modules."""
-__version__ = "2.6.0"
+__version__ = "2.7.0"

@@ -48,6 +48,13 @@ def read_osb(path, reference):
     return frame.sort_values(['sat', 'obs', 'start']).reset_index(drop=True)
 
 
+def satellite_clock_m(observations):
+    """c*dt_sat (m) from the interpolated SP3/CLK clock column (microseconds)."""
+    if 'dt_sat' not in observations:
+        raise ValueError('Satellite clocks (dt_sat) must be interpolated before AR products are applied.')
+    return C*1e-6*observations.dt_sat.to_numpy(float)
+
+
 class OSBProducts:
     """Same interface as io.ar_products.ARProducts: ``meta`` and ``apply(observations)``."""
 
@@ -90,8 +97,10 @@ class OSBProducts:
             for j, name in enumerate(names):
                 biases[rows, j] = self.value(int(sat), name, epochs)
         c1, l1, c2, l2 = biases.T
-        result['code_m'] = -(F1**2*c1-F2**2*c2)/(F1**2-F2**2)
-        result['phase_m'] = -(F1**2*l1-F2**2*l2)/(F1**2-F2**2)
+        # The AR solver models no satellite clock: like the JSON products, code_m/phase_m carry c*dt_sat.
+        clock = satellite_clock_m(result)
+        result['code_m'] = clock-(F1**2*c1-F2**2*c2)/(F1**2-F2**2)
+        result['phase_m'] = clock-(F1**2*l1-F2**2*l2)/(F1**2-F2**2)
         result['mw_m'] = -((F1*l1-F2*l2)/(F1-F2)-(F1*c1+F2*c2)/(F1+F2))
         complete = np.isfinite(biases).all(axis=1)
         self.meta['dropped_rows'] = int((~complete).sum())
