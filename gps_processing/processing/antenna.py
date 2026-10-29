@@ -8,9 +8,14 @@ Satellite attitude is the nominal yaw (no eclipse/noon-turn models); formulas fo
 from datetime import datetime
 import numpy as np
 from gps_processing.constants import C, F1, F2
+from gps_processing import gnss
 
 LAMBDA_NL = C/(F1+F2)
 IF1, IF2 = F1**2/(F1**2-F2**2), -F2**2/(F1**2-F2**2)
+# ANTEX frequency codes of the two carriers per system; receivers calibrated for GPS only use
+# the GPS values for Galileo (G01 for E1, G02 for E5a), the usual IGS fallback.
+ANTEX_FREQUENCIES = {'G': ('G01', 'G02'), 'E': ('E01', 'E05')}
+FALLBACK = {'E01': 'G01', 'E05': 'G02'}
 
 
 def sun_position(epochs, date):
@@ -71,21 +76,25 @@ def unwrap(sats, epochs, phase):
     return out
 
 
-def receiver_correction(antenna, delta_hen, los, receiver_xyz):
+def receiver_correction(antenna, delta_hen, los, receiver_xyz, system='G'):
     """IF and MW antenna corrections (m) to subtract from the observations: -e·(ARP+PCO) + PCV."""
+    k = gnss.constants(system)
     east, north, up = enu_axes(receiver_xyz)
     towards = -los                                              # receiver -> satellite
     zenith = np.degrees(np.arccos(np.clip(towards@up, -1, 1)))
     delta = delta_hen[0]*up+delta_hen[1]*east+delta_hen[2]*north
     per_frequency = []
-    for key in ('G01', 'G02'):
+    for key in ANTEX_FREQUENCIES[system]:
+        if antenna is not None and key not in antenna.offset:
+            key = FALLBACK.get(key, key)
         n, e, u = antenna.offset[key] if antenna is not None else (0.0, 0.0, 0.0)
         offset = delta+n*north+e*east+u*up
         pcv = np.interp(zenith, antenna.zenith, antenna.pcv[key]) if antenna is not None and key in antenna.pcv else 0.0
         per_frequency.append(-towards@offset+pcv)
     d1, d2 = per_frequency
-    ionosphere_free = IF1*d1+IF2*d2
-    mw = (F1*d1-F2*d2)/(F1-F2)-(F1*d1+F2*d2)/(F1+F2)
+    f1, f2 = k['f1'], k['f2']
+    ionosphere_free = k['if1']*d1+k['if2']*d2
+    mw = (f1*d1-f2*d2)/(f1-f2)-(f1*d1+f2*d2)/(f1+f2)
     return ionosphere_free, mw
 
 
@@ -102,7 +111,9 @@ def apply_antenna_models(combined, satellites, receiver_xyz, date, antennas=None
         offsets = np.zeros_like(xyz)
         for sat in satellites.sat.unique():
             item = satellite_antenna(antennas, int(sat), date)
-            pco = IF1*item.offset['G01']+IF2*item.offset.get('G02', item.offset['G01'])
+            k = gnss.constants(gnss.system_of(sat))
+            one, two = ANTEX_FREQUENCIES[gnss.system_of(sat)]
+            pco = k['if1']*item.offset[one]+k['if2']*item.offset.get(two, item.offset[one])
             rows = (satellites.sat == sat).to_numpy()
             offsets[rows] = ex[rows]*pco[0]+ey[rows]*pco[1]+ez[rows]*pco[2]
         satellites[['x', 'y', 'z']] = xyz+offsets               # centre of mass -> IF phase centre
@@ -118,10 +129,15 @@ def apply_antenna_models(combined, satellites, receiver_xyz, date, antennas=None
     cycles = unwrap(combined.sat.to_numpy(), combined.epok.to_numpy(float), windup(los, ex[rows], ey[rows], receiver_xyz))
     if phase_windup:
         combined['windup_cycles'] = cycles
-        combined['Lc'] -= LAMBDA_NL*cycles                     # MW is wind-up free
+        combined['Lc'] -= gnss.per_row(combined.sat.to_numpy(), 'lambda_n')*cycles    # MW is wind-up free
     if antennas is not None:
         antenna = antennas.get(receiver_type[:20].strip()) or antennas.get((receiver_type[:16].ljust(16)+'NONE').strip())
-        correction, mw = receiver_correction(antenna, np.asarray(delta_hen, float), los, receiver_xyz)
+        correction, mw = np.zeros(len(combined)), np.zeros(len(combined))
+        for system in gnss.SYSTEMS:
+            rows_s = (combined.sat > 100).to_numpy() if system == 'E' else (combined.sat <= 100).to_numpy()
+            if rows_s.any():
+                correction[rows_s], mw[rows_s] = receiver_correction(antenna, np.asarray(delta_hen, float), los[rows_s],
+                                                                     receiver_xyz, system)
         combined['Pc'] -= correction
         combined['Lc'] -= correction
         combined['A4'] -= mw

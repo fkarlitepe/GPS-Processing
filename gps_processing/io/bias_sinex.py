@@ -101,8 +101,8 @@ def align_code_biases(combined, biases):
     combined['code_bias_aligned'] = False
     codes = combined.signals.str.split(expand=True)
     for (sat, c1, c2), index in combined.groupby([combined.sat, codes[0], codes[2]]).groups.items():
-        if c1 == TARGET['1'] and c2 == TARGET['2']:
-            continue
+        if int(sat) > 100 or (c1 == TARGET['1'] and c2 == TARGET['2']):
+            continue                 # Galileo keeps its own codes (clock products differ: C1X/C5X or C1C/C5Q)
         rows = combined.loc[index]
         d1 = np.array([np.nan if (v := biases.dsb(int(sat), c1, e)) is None else v for e in rows.epok])
         d2 = np.array([np.nan if (v := biases.dsb(int(sat), c2, e)) is None else v for e in rows.epok])

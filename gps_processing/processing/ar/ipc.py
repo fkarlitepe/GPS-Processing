@@ -13,7 +13,7 @@ from .models import LAMBDA_W
 
 
 def transform(y, predicted, design, noise, reference):
-    """Keep the IF code and phase rows (Pc, Lc) of every satellite; drop MW."""
+    """Keep the IF code and phase rows (Pc, Lc) of every satellite; drop MW (``reference`` unused)."""
     keep = np.sort(np.r_[np.arange(0, len(y), 3), np.arange(1, len(y), 3)])
     return y[keep], predicted[keep], design[keep], noise[np.ix_(keep, keep)]
 
@@ -21,8 +21,9 @@ def transform(y, predicted, design, noise, reference):
 class WideLaneResolver:
     """Arc-averaged MW per satellite, satellite-averaged WRB and rounded wide lanes."""
 
-    def __init__(self, min_epochs=20, max_fraction=0.25, max_sigma=0.1):
-        self.min_epochs, self.max_fraction, self.max_sigma = min_epochs, max_fraction, max_sigma
+    def __init__(self, min_epochs=20, max_fraction=0.25, max_sigma=0.1, lambda_w=LAMBDA_W):
+        """One resolver per satellite system: the receiver WL bias and wavelength are system specific."""
+        self.min_epochs, self.max_fraction, self.max_sigma, self.lambda_w = min_epochs, max_fraction, max_sigma, lambda_w
         self.sum, self.square, self.count = {}, {}, {}
         self.receiver_bias = np.nan
 
@@ -31,7 +32,7 @@ class WideLaneResolver:
             store.pop(sat, None)
 
     def add(self, sat, mw_m):
-        cycles = mw_m/LAMBDA_W
+        cycles = mw_m/self.lambda_w
         self.sum[sat] = self.sum.get(sat, 0.0)+cycles
         self.square[sat] = self.square.get(sat, 0.0)+cycles**2
         self.count[sat] = self.count.get(sat, 0)+1

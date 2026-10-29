@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from gps_processing.constants import C, F1, F2
 from gps_processing.io.ionex import read_text
+from gps_processing import gnss
 
 IF1, IF2 = F1**2/(F1**2-F2**2), -F2**2/(F1**2-F2**2)
 LAMBDA_W = C/(F1-F2)
@@ -28,11 +29,15 @@ def read_fcb(path, reference):
             columns = line.split()[2:]
         elif line[:1].isdigit():
             p = line.split()
-            if len(p) < 7 or not p[4].startswith('G'):
+            if len(p) < 7 or p[4][:1] not in gnss.SYSTEMS:
+                continue
+            # Second carrier: GPS L2 (column 2), Galileo E5a = L5 (column 3; its L2 column is a placeholder).
+            second = 7 if p[4][0] == 'G' else 9
+            if second >= len(p) or columns is None or (p[4][0] == 'E' and columns[2:3] != ['L5']):
                 continue
             start = (datetime.strptime(p[0]+' '+p[1], '%Y/%m/%d %H:%M:%S')-reference).total_seconds()
             end = (datetime.strptime(p[2]+' '+p[3], '%Y/%m/%d %H:%M:%S')-reference).total_seconds()
-            rows.append((int(p[4][1:]), start, end, float(p[5]), float(p[7])))
+            rows.append((gnss.parse(p[4]), start, end, float(p[5]), float(p[second])))
     if columns is None or columns[:2] != ['L1', 'L2'] or not rows:
         raise ValueError(f'{Path(path).name}: not a GENFCB L1/L2 FCB file.')
     return pd.DataFrame(rows, columns=['sat', 'start', 'end', 'b1', 'b2']).sort_values(['sat', 'start']).reset_index(drop=True)
@@ -61,9 +66,11 @@ class FCBProducts:
             b1[rows[ok]], b2[rows[ok]] = g.b1.to_numpy()[k[ok]], g.b2.to_numpy()[k[ok]]
         from gps_processing.io.osb_products import satellite_clock_m
         clock = satellite_clock_m(result)                  # c*dt_sat, as in the JSON product contract
+        sats = result.sat.to_numpy()
+        if1, if2 = gnss.per_row(sats, 'if1'), gnss.per_row(sats, 'if2')
         result['code_m'] = clock
-        result['phase_m'] = clock-(IF1*C/F1*b1+IF2*C/F2*b2)
-        result['mw_m'] = -LAMBDA_W*(b1-b2)
+        result['phase_m'] = clock-(if1*gnss.per_row(sats, 'lambda1')*b1+if2*gnss.per_row(sats, 'lambda2')*b2)
+        result['mw_m'] = -gnss.per_row(sats, 'lambda_w')*(b1-b2)
         complete = np.isfinite(b1) & np.isfinite(b2)
         self.meta['dropped_rows'] = int((~complete).sum())
         if not complete.any():

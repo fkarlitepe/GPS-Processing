@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
+from gps_processing import gnss
 
 def read_sp3(path):
     rows, stamp = [], None
@@ -9,13 +10,13 @@ def read_sp3(path):
             if line.startswith('*'):
                 fields = line[1:].split()
                 stamp = datetime(*map(int, fields[:5])) + timedelta(seconds=float(fields[5]))
-            elif line.startswith('PG') and stamp is not None:
+            elif line[:1] == 'P' and line[1:2] in gnss.SYSTEMS and stamp is not None:
                 values = [float(line[a:b]) for a,b in ((4,18),(18,32),(32,46),(46,60))]
                 if any(abs(v) >= 999999 for v in values) or np.linalg.norm(values[:3]) == 0:
                     continue
-                rows.append((int(line[2:4]), *values, stamp))
+                rows.append((gnss.sat_id(line[1], int(line[2:4])), *values, stamp))
     if not rows:
-        raise ValueError(f'Geçerli GPS SP3 kaydı yok: {path}')
+        raise ValueError(f'Geçerli GPS/Galileo SP3 kaydı yok: {path}')
     return pd.DataFrame(rows, columns=['sat','x','y','z','time','timestamp'])
 
 def combine_sp3(before, day, after):

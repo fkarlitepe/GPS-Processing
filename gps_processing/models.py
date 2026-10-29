@@ -25,6 +25,7 @@ class ProcessingConfig:
     output: Path = Path('results')
     elevation_mask: float = 10.0
     technique: str = 'PPP'
+    systems: tuple = ('G',)           # 'G' GPS (L1/L2), 'E' Galileo (E1/E5a); chosen in the UI / --systems
     ionosphere: str = ''
     troposphere: str = ''
     code_biases: str = ''
@@ -66,6 +67,11 @@ class ProcessingConfig:
     reference_xyz: tuple = None
 
     def validate(self):
+        from gps_processing import gnss
+        if not self.systems or not set(self.systems) <= set(gnss.SYSTEMS):
+            raise ValueError('En az bir uydu sistemi seçin: GPS (G) ve/veya Galileo (E).')
+        if 'E' in self.systems and self.technique == 'PPP' and self.estimator == 'sequential':
+            raise ValueError('Galileo, EKF kestiricisiyle çözülür; Sıralı LS v2.0 temel çözümü yalnız GPS içindir.')
         if self.technique not in ('PPP', 'PPP-AR/SDBS', 'PPP-AR/DCM', 'PPP-AR/IPC'):
             raise NotImplementedError('Desteklenen yöntemler: PPP, PPP-AR/SDBS, PPP-AR/DCM, PPP-AR/IPC.')
         if self.estimator not in ESTIMATORS:

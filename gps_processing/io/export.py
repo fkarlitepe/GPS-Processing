@@ -24,6 +24,10 @@ def export_result(result, directory):
         tables['residuals'] = result.residuals
     if result.statistics:
         tables['statistics'] = pd.DataFrame([result.statistics])
+    from gps_processing import gnss
+    # Readable satellite names next to the integer ids (GPS n, Galileo 100+n).
+    tables = {name: (table.assign(prn=[gnss.label(s) for s in table.sat]) if 'sat' in table and len(table) and 'prn' not in table else table)
+              for name, table in tables.items()}
     for name, table in tables.items():
         table.to_csv(directory/f'{name}.csv', index=False)
     with pd.ExcelWriter(directory/'results.xlsx', engine='openpyxl') as writer:
