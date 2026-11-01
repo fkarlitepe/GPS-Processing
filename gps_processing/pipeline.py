@@ -72,7 +72,7 @@ def prepare(config, progress):
                                  'choose a multi-GNSS clock file or deselect that system.')
         clocks = Clocks(frame)
     progress(40, 'Satellite clocks, 9th-order Lagrange interpolation and relativity')
-    obs.combined, satellites = interpolate_satellites(orbit, obs.combined, clocks)
+    obs.combined, satellites = interpolate_satellites(orbit, obs.combined, clocks, obs.approximate_xyz)
     return orbit, obs, satellites
 
 
@@ -109,8 +109,12 @@ def antenna_models(config, obs, satellites):
         ocean = erp = None
         if config.ocean_loading:
             from gps_processing.io.blq import read_blq, select_station
-            ocean = select_station(read_blq(config.ocean_loading), obs.marker, config.ocean_loading)
-            info['ocean_loading'] = f'BLQ {Path(config.ocean_loading).name} ({obs.marker or "?"}), 11 constituents'
+            try:
+                ocean = select_station(read_blq(config.ocean_loading), obs.marker, config.ocean_loading)
+                info['ocean_loading'] = f'BLQ {Path(config.ocean_loading).name} ({obs.marker or "?"}), 11 constituents'
+            except ValueError as exc:
+                # A multi-station BLQ (e.g. for a reference network) may lack some stations.
+                info['ocean_loading'] = f'not applied: {exc}'
         if config.erp:
             from gps_processing.io.erp import read_erp
             erp = read_erp(config.erp)

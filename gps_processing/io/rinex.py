@@ -58,6 +58,13 @@ def rinex3_rows(lines, end, types):
         i += 1
         if line.startswith('>'):
             parts = line[1:].split()
+            if len(parts) < 8 or not line[2:6].strip():
+                # Event record without a date ('>  4 163', e.g. a header block): flag in column 32,
+                # number of following lines in columns 33-35.
+                flag, count = int(line[31:32] or 0), int(line[32:35] or 0)
+                i += count
+                epoch = None
+                continue
             y, m, d, h, minute = map(int, parts[:5])
             second = float(parts[5])
             flag, count = int(parts[6]), int(parts[7])

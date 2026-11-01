@@ -107,7 +107,7 @@ class ProcessingConfig:
     ar_max_exclusions: int = 2        # satellites dropped (lowest P0 first) after a rejected stage
     ar_min_elevation: float = 15.0    # deg, AR candidates only (the float filter uses elevation_mask)
     ar_min_arc: float = 900.0         # s, minimum arc duration of an AR candidate
-    ar_candidate_gates: bool = True   # PRIDE fraction (WL 0.20 / N1 0.15 cycle) and sigma (0.25 cycle) gates
+    ar_candidate_gates: bool = False  # PRIDE fraction/sigma gates; off: in a sequential filter they reject converging arcs
     ar_hold: bool = False             # fix-and-hold: feed repeated fixes back to the float filter
     ar_fixability: bool = False       # self-supervised fixability model (hindsight labels, two passes)
     ar_fixability_threshold: float = 0.5

@@ -199,3 +199,24 @@ class NetworkTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SagnacTests(unittest.TestCase):
+    def test_receiver_clock_does_not_rotate_the_satellite(self):
+        """P/c contains the receiver clock; the Earth-rotation angle must not (MADR: 7.5 cm east bias)."""
+        from gps_processing.processing.orbit import interpolate_satellites
+        nodes = np.arange(-3600, 90000, 900.0)
+        orbit = pd.DataFrame(dict(sat=5, epok=nodes, x=2.0e4+0.1*nodes/900, y=1.5e4*np.cos(nodes/7000),
+                                  z=1.0e4*np.sin(nodes/7000), time=0.0))
+        receiver = SITE
+        distance = 2.2e7
+        rows = lambda clock: pd.DataFrame(dict(sat=[5], epok=[3600.0], travel_code=[distance+299792458.0*clock]))
+        _, a = interpolate_satellites(orbit, rows(0.0), receiver_xyz=receiver)
+        _, b = interpolate_satellites(orbit, rows(1e-3), receiver_xyz=receiver)
+        # Old behaviour (no receiver position): the 1 ms receiver clock enters the rotation angle.
+        _, c = interpolate_satellites(orbit, rows(1e-3))
+        rotation_error = np.linalg.norm(b[['x', 'y', 'z']].to_numpy()-c[['x', 'y', 'z']].to_numpy())
+        self.assertGreater(rotation_error, 0.5)
+        # With the receiver position the angle is geometric: same rotation for both clocks.
+        angle = lambda frame: np.arctan2(frame.y.iloc[0], frame.x.iloc[0])
+        self.assertLess(abs(angle(a)-angle(b)), 1e-7)
