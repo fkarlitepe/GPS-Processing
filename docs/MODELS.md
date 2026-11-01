@@ -32,6 +32,19 @@ başlığı CNES'tir (`%=BIA 1.00 CNT`, "CNES OSB solutions", PPP-Wizard). Saat 
 CNES faz biasları yalnız CNES (GRG) saatleriyle tamsayı özelliği taşır. Bu karışım artık hata
 olarak durdurulur. MADR'da WL'nin çalışıp NL'nin hiç çözülememesinin nedeni budur (aşağıya bakın).
 
+## Sagnac düzeltmesi (v2.9.1)
+
+`processing/orbit.py` Dünya dönüşü açısını ω·P/c ile hesaplıyordu. P/c alıcı saat hatasını da içerir; MADR'da bu hata −0,18 ms'dir, bu da uyduyu ~0,35 m yanlış döndürür. 24 saatlik float PPP'de 7,5 cm Doğu kayması ve uyduya özgü sabit faz hataları oluşuyordu. Açı artık yaklaşık alıcı konumuyla geometrik yayılma süresinden hesaplanıyor (RTKLIB'deki gibi). Düzeltmeden sonra:
+
+- MADR 24 saatlik float PPP, IGS SINEX'e göre D 0,0 / K 0,3 / Y −0,4 cm.
+- Aynı merkezin MGEX setleriyle NL kesirlerinin ±0,15 çevrim içindeki oranı:
+  - COD: %94
+  - GRG: %96
+  - WUM: %96
+- GFZ RAP OSB ile bu oran %43. GFZ'nin faz OSB sigmaları büyük ve Galileo C1X/C5X biasları yok.
+
+**Aşağıdaki MADR tabloları bu hatayla hesaplanmıştır.** Ürün tutarlılığı için kanıt olarak kullanılmamalıdır. Güncel değerler `results/experiments/nl_test` altındadır.
+
 ## Dar şerit teşhisi (`processing/diagnostics.py`)
 
 1. Koordinat sabitlenir. Kullanıcı referansı varsa o kullanılır, yoksa aynı günün yakınsamış

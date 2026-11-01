@@ -41,9 +41,15 @@ def lagrange(nodes, values, targets, scale=900.0):
     return out
 
 
-def interpolate_satellites(orbit, observations, clocks=None):
+def interpolate_satellites(orbit, observations, clocks=None, receiver_xyz=None):
     """``clocks``: optional high-rate clock interpolator (io.clock_rinex.Clocks); observations of a
     satellite/epoch the clock file does not cover are dropped (counted in attrs['orbit_clock_dropped']).
+
+    The emission time t - P/c - dt_s is exact (the receiver clock in P cancels the one in the time
+    tag), but the Earth-rotation angle must use the geometric travel time: P/c also contains the
+    receiver clock offset, and 0.18 ms of it (MADR) rotates the satellite by ~0.35 m and biases the
+    east coordinate by several cm. With ``receiver_xyz`` (approximate position, metre level is
+    enough) the angle is omega*|r_s - r_r|/c, as in RTKLIB.
 
     Vectorized per satellite (same results as the scalar ``interpolate``)."""
     groups = {int(s): f.sort_values('epok') for s,f in orbit.groupby('sat')}
@@ -72,6 +78,8 @@ def interpolate_satellites(orbit, observations, clocks=None):
         # Central difference velocity (m/s) for the periodic relativistic clock term.
         velocity = (lagrange(t, nodes, emission+.5)-lagrange(t, nodes, emission-.5))*1000
         relativity = -2*np.einsum('ij,ij->i', xyz, velocity)/C
+        if receiver_xyz is not None and np.linalg.norm(receiver_xyz) > 6e6:
+            travel = np.linalg.norm(xyz-np.asarray(receiver_xyz, float), axis=1)/C   # geometric, no receiver clock
         angle = OMEGA_E*travel
         cos, sin = np.cos(angle), np.sin(angle)
         xyz = np.column_stack([cos*xyz[:, 0]+sin*xyz[:, 1], -sin*xyz[:, 0]+cos*xyz[:, 1], xyz[:, 2]])

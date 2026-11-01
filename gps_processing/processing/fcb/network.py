@@ -70,7 +70,11 @@ def process_stations(config, paths, progress, workers=0):
         out = []
         for k, path in enumerate(paths):
             progress(5+int(55*k/len(paths)), f'Float PPP for FCB: station {k+1}/{len(paths)} ({path.name})')
-            out.append(station_ambiguities(config, path))
+            try:
+                out.append(station_ambiguities(config, path))
+            except Exception as exc:                     # one unreadable station must not stop the network
+                progress(5+int(55*k/len(paths)), f'Station {path.name} skipped: {exc}')
+                out.append(None)
         return out
     saved = {key: os.environ.get(key) for key in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')}
     os.environ.update({key: '1' for key in saved})
@@ -80,7 +84,10 @@ def process_stations(config, paths, progress, workers=0):
         with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
             futures = {pool.submit(station_ambiguities, config, path): k for k, path in enumerate(paths)}
             for done, future in enumerate(as_completed(futures), 1):
-                results[futures[future]] = future.result()
+                try:
+                    results[futures[future]] = future.result()
+                except Exception as exc:                 # one unreadable station must not stop the network
+                    progress(5+int(55*done/len(paths)), f'Station {paths[futures[future]].name} skipped: {exc}')
                 progress(5+int(55*done/len(paths)), f'Float PPP for FCB: {done}/{len(paths)} stations ({workers} processes)')
         return results
     finally:
@@ -210,8 +217,11 @@ def estimate_fcb(config, stations, methods=core.METHODS, interval=900.0, wl_inte
     output = Path(config.output)/'fcb'
     output.mkdir(parents=True, exist_ok=True)
     data, names, date, coordinates = [], set(), None, {}
-    for k, (path, (name, day, ambiguities, xyz)) in enumerate(zip(paths, process_stations(config, paths, progress,
-                                                                                           getattr(config, 'fcb_workers', 0)))):
+    processed = process_stations(config, paths, progress, getattr(config, 'fcb_workers', 0))
+    for k, (path, result) in enumerate(zip(paths, processed)):
+        if result is None:
+            continue
+        name, day, ambiguities, xyz = result
         if date is not None and day.date() != date.date():
             raise ValueError(f'{path.name}: observation day differs from the other stations.')
         if name in names:

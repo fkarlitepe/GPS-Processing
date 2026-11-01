@@ -60,8 +60,8 @@ def main():
     ambiguity.add_argument('--ar-min-arc', type=float, default=900.0, help='s, minimum arc duration of an AR candidate')
     ambiguity.add_argument('--ar-hold', action='store_true', help='fix-and-hold: feed repeated fixes back to the filter')
     ambiguity.add_argument('--ar-hold-epochs', type=int, default=10)
-    ambiguity.add_argument('--no-ar-candidate-gates', dest='ar_candidate_gates', action='store_false',
-                           help='skip the PRIDE fraction/sigma gates of the AR candidates')
+    ambiguity.add_argument('--ar-candidate-gates', action='store_true',
+                           help='PRIDE fraction/sigma gates of the AR candidates (for converged batch-like solutions)')
     ambiguity.add_argument('--ar-fixability', action='store_true',
                            help='self-supervised ML fixability (hindsight labels from a float pass) orders, gates and triggers AR')
     ambiguity.add_argument('--ar-fixability-threshold', type=float, default=0.5)
