@@ -4,6 +4,7 @@ content.py -> manuscript.fodt (LibreOffice flat ODT: StarMath formulas, embedded
 -> manuscript.docx (LibreOffice export; formulas become native Word equations).
 
     python3 manuscript/build.py            # writes manuscript.docx in the project root
+    python3 manuscript/build.py jse        # ASCE J. Surv. Eng. version from content_jse.py -> manuscript_JSE.docx
 
 Block types in content.py:
   ('h1'|'h2', text)                   headings
@@ -12,6 +13,11 @@ Block types in content.py:
   ('fig:label', path, caption, cm)    figure (PNG) with caption; {fig:label} -> number
   ('tab:label', caption, header, rows) table with caption above; {tab:label} -> number
   ('ref', text)                       reference (*italic*), sorted alphabetically
+  ('title'|'center', text)            centred title / title-page line
+  ('break',)                          page break
+
+In the ASCE layout (jse) the text is double spaced with line and page numbers; with DEFER the tables,
+the list of figure captions and the figures follow the references, each on its own page.
 """
 import base64
 import re
@@ -23,7 +29,12 @@ from xml.sax.saxutils import escape
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from content import BLOCKS, REFERENCES          # noqa: E402
+ASCE = len(sys.argv) > 1 and sys.argv[1] == 'jse'
+DEFER = False   # True: tables and figures after the references; False: at their place in the text
+if ASCE:
+    from content_jse import BLOCKS, REFERENCES  # noqa: E402
+else:
+    from content import BLOCKS, REFERENCES      # noqa: E402
 
 HEAD = '''<?xml version="1.0" encoding="UTF-8"?>
 <office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
@@ -86,6 +97,19 @@ HEAD = '''<?xml version="1.0" encoding="UTF-8"?>
  <style:style style:name="Reference" style:family="paragraph" style:parent-style-name="Standard">
   <style:paragraph-properties fo:text-align="justify" fo:margin-left="1cm" fo:text-indent="-1cm" fo:margin-bottom="0.12cm" fo:line-height="130%"/>
   <style:text-properties fo:font-size="11pt"/>
+ </style:style>
+ <style:style style:name="Title" style:family="paragraph" style:parent-style-name="Standard">
+  <style:paragraph-properties fo:text-align="center" fo:margin-top="1cm" fo:margin-bottom="0.6cm" fo:line-height="150%"/>
+  <style:text-properties fo:font-size="16pt" fo:font-weight="bold"/>
+ </style:style>
+ <style:style style:name="Center" style:family="paragraph" style:parent-style-name="Standard">
+  <style:paragraph-properties fo:text-align="center" fo:margin-bottom="0.2cm" fo:line-height="150%"/>
+ </style:style>
+ <style:style style:name="Footer" style:family="paragraph" style:parent-style-name="Standard">
+  <style:paragraph-properties fo:text-align="center"/>
+ </style:style>
+ <style:style style:name="Break" style:family="paragraph" style:parent-style-name="Standard">
+  <style:paragraph-properties fo:break-before="page"/>
  </style:style>
  <style:style style:name="Bold" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>
  <style:style style:name="Italic" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>
@@ -167,9 +191,10 @@ COLUMN_STYLES = []
 
 def table(caption, header, rows, number):
     columns = len(header)
-    # The first column holds the labels: give it the width of its longest word group, the rest share the remainder.
-    first = min(0.45, max(0.18, max(len(str(r[0])) for r in [header]+rows)/120))
-    widths = [first]+[(1-first)/(columns-1)]*(columns-1)
+    # Column widths follow the longest entry of each column (header words may wrap), within limits.
+    longest = [max([max(len(w) for w in str(header[k]).split())]+[len(str(r[k])) for r in rows]) for k in range(columns)]
+    weights = [min(max(n, 4), 40) for n in longest]
+    widths = [w/sum(weights) for w in weights]
     for k, w in enumerate(widths):
         COLUMN_STYLES.append(f'<style:style style:name="T{number}C{k}" style:family="table-column">'
                              f'<style:table-column-properties style:column-width="{16*w:.2f}cm"/></style:style>')
@@ -189,6 +214,22 @@ def sort_key(block):
     return unicodedata.normalize('NFD', block[1]).encode('ascii', 'ignore').decode().lower()
 
 
+def asce_layout(head):
+    """Double spacing, line numbers and page numbers (ASCE manuscript format)."""
+    head = head.replace('fo:text-align="justify" fo:text-indent="1cm" fo:margin-top="0cm" fo:margin-bottom="0.2cm" fo:line-height="150%"',
+                        'fo:text-align="start" fo:text-indent="1cm" fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="200%"')
+    head = head.replace('fo:margin-bottom="0.12cm" fo:line-height="130%"', 'fo:margin-bottom="0cm" fo:line-height="200%"')
+    head = head.replace('</office:styles>', '<text:linenumbering-configuration text:number-lines="true" text:increment="1" '
+                        'text:restart-on-page="false" style:num-format="1" text:offset="0.6cm" text:number-position="left"/>'
+                        '</office:styles>')
+    head = head.replace('<style:master-page style:name="Standard" style:page-layout-name="pm1"/>',
+                        '<style:master-page style:name="Standard" style:page-layout-name="pm1"><style:footer>'
+                        '<text:p text:style-name="Footer"><text:page-number text:select-page="current"/></text:p>'
+                        '</style:footer></style:master-page>')
+    return head.replace('<style:page-layout-properties fo:page-width="21cm"', '<style:page-layout-properties fo:page-width="21.59cm" fo:page-height="27.94cm"'
+                        ).replace('fo:page-height="29.7cm" ', '')
+
+
 def build():
     count = {'eq': 0, 'fig': 0, 'tab': 0}
     for block in BLOCKS:                       # first pass: numbers of labelled items
@@ -197,13 +238,19 @@ def build():
             count[kind] += 1
             if ':' in block[0]:
                 labels[block[0]] = count[kind]
-    body, count = [], {'eq': 0, 'fig': 0, 'tab': 0}
+    body, count, tables, figures = [], {'eq': 0, 'fig': 0, 'tab': 0}, [], []
     for block in BLOCKS:
         kind = block[0].split(':')[0]
         if kind == 'h1':
             body.append(f'<text:h text:style-name="Heading_20_1" text:outline-level="1">{escape(block[1])}</text:h>')
         elif kind == 'h2':
             body.append(f'<text:h text:style-name="Heading_20_2" text:outline-level="2">{escape(block[1])}</text:h>')
+        elif kind == 'title':
+            body.append(f'<text:p text:style-name="Title">{inline(block[1])}</text:p>')
+        elif kind == 'center':
+            body.append(f'<text:p text:style-name="Center">{inline(block[1])}</text:p>')
+        elif kind == 'break':
+            body.append('<text:p text:style-name="Break"/>')
         elif kind == 'p':
             body.append(f'<text:p text:style-name="Body">{inline(block[1])}</text:p>')
         elif kind == 'eq':
@@ -211,15 +258,25 @@ def build():
             body.append(f'<text:p text:style-name="Equation"><text:tab/>{formula(block[1], True)}<text:tab/>({count["eq"]})</text:p>')
         elif kind == 'fig':
             count['fig'] += 1
-            body.append(figure(block[1], block[2], block[3], count['fig']))
+            (figures if DEFER else body).append((block, count['fig']) if DEFER else figure(block[1], block[2], block[3], count['fig']))
         elif kind == 'tab':
             count['tab'] += 1
-            body.append(table(block[1], block[2], block[3], count['tab']))
+            (tables if DEFER else body).append(table(block[1], block[2], block[3], count['tab']))
     refs = [b for b in REFERENCES if b[0] == 'ref']
     body.append('<text:h text:style-name="Heading_20_1" text:outline-level="1">References</text:h>')
     for _, text in sorted(refs, key=sort_key):
         body.append(f'<text:p text:style-name="Reference">{inline(text, italic_marks=True)}</text:p>')
-    return HEAD.replace('</office:automatic-styles>', ''.join(COLUMN_STYLES)+'</office:automatic-styles>')+'\n'.join(body)+TAIL, count, len(refs)
+    for t in tables:                           # ASCE: each table on its own page after the references
+        body += ['<text:p text:style-name="Break"/>', t]
+    if figures:
+        body += ['<text:p text:style-name="Break"/>',
+                 '<text:h text:style-name="Heading_20_1" text:outline-level="1">List of Figure Captions</text:h>']
+        body += [f'<text:p text:style-name="Reference"><text:span text:style-name="Bold">Fig. {n}.</text:span> {inline(b[2])}</text:p>'
+                 for b, n in figures]
+        for b, n in figures:
+            body += ['<text:p text:style-name="Break"/>', figure(b[1], b[2], b[3], n)]
+    head = asce_layout(HEAD) if ASCE else HEAD
+    return head.replace('</office:automatic-styles>', ''.join(COLUMN_STYLES)+'</office:automatic-styles>')+'\n'.join(body)+TAIL, count, len(refs)
 
 
 if __name__ == '__main__':
@@ -229,6 +286,6 @@ if __name__ == '__main__':
     (work/'manuscript.fodt').write_text(xml, encoding='utf-8')
     subprocess.run(['soffice', '--headless', '--convert-to', 'docx:MS Word 2007 XML', '--outdir', str(work),
                     str(work/'manuscript.fodt')], check=True, capture_output=True)
-    target = HERE.parent/'manuscript.docx'
+    target = HERE.parent/('manuscript_JSE.docx' if ASCE else 'manuscript.docx')
     target.write_bytes((work/'manuscript.docx').read_bytes())
     print(f'{count["eq"]} equations, {count["fig"]} figures, {count["tab"]} tables, {references} references -> {target}')
