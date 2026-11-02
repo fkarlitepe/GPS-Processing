@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Cover Letter</title>
+<style>
+body { font-family: 'Times New Roman', serif; font-size: 11.5pt; line-height: 1.2; }
+p { margin: 0 0 8pt 0; text-align: justify; }
+ul { margin: 0 0 10pt 0; }
+li { margin-bottom: 4pt; text-align: justify; }
+.right { text-align: right; }
+.left { text-align: left; }
+</style></head>
+<body>
+<p class="right">Furkan Karlıtepe<br>Department of Geomatics Engineering<br>Tokat Gaziosmanpaşa University<br>Tokat, Türkiye<br>furkan.karlitepe@gop.edu.tr</p>
+<p class="right">November 2, 2026</p>
+
+<p class="left">The Editor<br><i>Journal of Surveying Engineering</i><br>American Society of Civil Engineers</p>
+
+<p>Dear Editor,</p>
+
+<p>Please consider the enclosed manuscript, “Reliable Ambiguity Resolution in GPS+Galileo Precise Point Positioning,” for publication as a Technical Paper in the <i>Journal of Surveying Engineering</i>.</p>
+
+<p>Precise point positioning with ambiguity resolution (PPP-AR) lets a surveyor obtain centimetre-level coordinates from one receiver without a nearby base station. In practice, the result depends on three factors that are rarely evaluated together: the rule that accepts the integer ambiguities, the user model, and whether the satellite bias products match the orbits and clocks used. The manuscript evaluates all three in one processing system, with real GPS+Galileo data and with statistical tests on independent sessions. Its main contributions are:</p>
+<ul>
+<li>Float PPP and three PPP-AR user models (decoupled clock, between-satellite single differences and integer phase clocks) share one extended Kalman filter and one integer decision. This allows the first direct comparison of these models on identical data.</li>
+<li>An integer decision chain combines Dong–Bock ordering, partial fixing by bootstrapped success rate, a fixed failure-rate ratio test and satellite exclusion. A step-by-step comparison shows that this chain, rather than the added machine-learning components, gives most of the improvement.</li>
+<li>A simple narrow-lane consistency test needs only one station with known coordinates and one day of data. It detected an inconsistent product set that produced wrong integers in 63–71% of the fixes, while the formal quality indicators looked normal.</li>
+<li>Fractional cycle biases estimated from 48 European stations are validated at stations left out of the estimation and at an independent user station.</li>
+</ul>
+
+<p>With consistent products, a 2-h occupation processed with ambiguity resolution reduced the horizontal RMS error from 3.2–3.5 cm to 0.6–0.8 cm (Wilcoxon p ≤ 0.012). These results give surveyors practical guidance on choosing products, checking them before use, and avoiding processing options that degrade short static sessions. The manuscript builds on earlier PPP and PPP-AR studies published in the <i>Journal of Surveying Engineering</i>, including those by Martín et al. (2011), Elsobeiey and El-Rabbany (2014), Grinter et al. (2020), Wang et al. (2020), Ma et al. (2021) and Konakoglu and Yilmaz (2024). I therefore believe it suits the journal’s readership.</p>
+
+<p>The manuscript is original. It has not been published, and it is not under consideration for publication elsewhere. The author approves this submission and declares no conflict of interest. All observations and products used are publicly available from the IGS and MGEX data centres, and a Data Availability Statement is included. The manuscript contains about 4,900 words of text, 7 figures and 9 tables.</p>
+
+<p>Thank you for your consideration. I look forward to hearing from you.</p>
+
+<p>Sincerely,</p>
+<p class="left">Furkan Karlıtepe<br>Department of Geomatics Engineering, Tokat Gaziosmanpaşa University</p>
+</body></html>
