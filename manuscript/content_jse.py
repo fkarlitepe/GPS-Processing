@@ -103,7 +103,7 @@ def nl_rows():
 
 
 BLOCKS = [
-('title', 'Reliable Ambiguity Resolution in GPS+Galileo Precise Point Positioning'),
+('title', 'Supporting GPS+Galileo PPP Ambiguity Resolution with an Extended Kalman Filter and Machine Learning'),
 ('center', 'Furkan Karlıtepe¹'),
 ('center', '¹Dept. of Geomatics Engineering, Tokat Gaziosmanpaşa Univ., Tokat, Türkiye. Email: furkan.karlitepe@gop.edu.tr'),
 ('break',),
