@@ -12,3 +12,6 @@ Data/products/
 Data/sinex/
 Data/network_global5/
 manuscript/build/
+*.docx
+*.pdf
+.~lock.*#
