@@ -103,7 +103,7 @@ def nl_rows():
 
 
 BLOCKS = [
-('title', 'Integer Decision, User Models, and Product Consistency in GPS+Galileo Precise Point Positioning with Ambiguity Resolution: A Single-Filter Evaluation'),
+('title', 'Reliable Ambiguity Resolution in GPS+Galileo Precise Point Positioning'),
 ('center', 'Furkan Karlıtepe¹'),
 ('center', '¹Dept. of Geomatics Engineering, Tokat Gaziosmanpaşa Univ., Tokat, Türkiye. Email: furkan.karlitepe@gop.edu.tr'),
 ('break',),
