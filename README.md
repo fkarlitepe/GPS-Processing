@@ -2,6 +2,24 @@
 
 GNSS (GPS + Galileo) Precise Point Positioning (PPP / PPP-AR) araştırma projesi.
 
+## Paper and reproducibility
+
+This repository contains the software and scripts of the paper *Supporting GPS+Galileo PPP Ambiguity Resolution with an Extended Kalman Filter and Machine Learning* (Karlıtepe, submitted to the ASCE Journal of Surveying Engineering). It is released under the MIT License; see `CITATION.cff` for citation.
+
+The experiments use IGS station MADR on November 23, 2023 (day 327). The GNSS observations and the MGEX products (COD, GRG, WUM, GFZ) are not redistributed here; download them from the IGS data centres into the paths listed in `experiments/common.py`: the MADR RINEX file into `Data/obs/`, the network RINEX files (`experiments/network_stations.csv`) into `Data/network/`, the products into `Data/products/2023327/<centre>/`, the IGS SINEX file into `Data/sinex/` and the ANTEX, BLQ and ERP files into `Data/models/`. Then:
+
+```bash
+python3 -m experiments.nl_test                      # narrow-lane product test
+python3 -m experiments.run_grid products            # Experiment A: analysis-centre products
+python3 -m experiments.run_network_fcb              # Experiment B, step 1: FCBs from the station network
+python3 -m experiments.run_grid network results/experiments/network_fcb/fcb   # Experiment B, step 2
+python3 -m experiments.run_grid ablation            # contribution of each component
+python3 experiments/analyse.py products|network|ablation|nl   # tables, statistics and figures
+python3 experiments/station_map.py                  # station map (requires PyGMT)
+```
+
+Set `OMP_NUM_THREADS=1` when running the grids in parallel. Results are written to `results/experiments/`.
+
 **v2.1:** Kestirim noktalarına iterasyonlu **genişletilmiş Kalman filtresi** (statik/kinematik, ZWD kestirimi, IGG-III robust ve adaptif güncelleme), **LAMBDA + kısmi AR** ve iki **makine öğrenmesi** bileşeni (artıklardan öğrenilen gözlem varyansı, Monte Carlo ile eğitilmiş AR doğrulayıcı) eklendi; arayüze yöntem ayarları, grafikler ve **yöntem karşılaştırması** sekmesi geldi. Denklemler, örnek sonuçlar ve deney tasarımı: [EKF ve ML belgesi](docs/EKF_ML.md).
 
 **v2.5:** Integer phase clock (IPC, Laurichesse) kullanıcı modeli eklendi (`--technique PPP-AR/IPC`). SDBS/DCM, Shi & Gao (2014) karşılaştırmasına göre gözden geçirildi; referans uydu değişiminde belirsizlikler artık sıfırlanmıyor, tamsayı kaydırmayla korunuyor. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).

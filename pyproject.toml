@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "togu-gps-processing"
-version = "2.9.0"
+version = "2.9.1"
 description = "Modular experimental GNSS (GPS + Galileo) PPP / PPP-AR processing with EKF and machine learning options"
 requires-python = ">=3.10"
+license = {text = "MIT"}
 dependencies = ["numpy>=1.21", "pandas>=1.4", "openpyxl>=3.0", "scipy>=1.13"]
 
 [project.optional-dependencies]
