@@ -221,6 +221,9 @@ BLOCKS = [
 ('h1', 'Acknowledgments'),
 ('p', 'The author thanks the International GNSS Service (IGS, https://igs.org) and its Multi-GNSS Experiment (MGEX) for the GNSS observations, SINEX solutions and antenna calibrations, and the analysis centres CODE, CNES/CLS, Wuhan University and GFZ for the orbit, clock and bias products. These data are available from the IGS global data centres.'),
 
+('h1', 'Supplemental Material'),
+('p', 'The PPP-AR software, the processing and analysis scripts used for all experiments, tables and figures, and the instructions to reproduce the experiments are available online at https://github.com/fkarlitepe/GPS-Processing.'),
+
 ]
 
 REFERENCES = [
