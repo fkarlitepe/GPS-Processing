@@ -47,6 +47,23 @@ def main():
     estimation.add_argument('--code-sigma', type=float, default=0.3)
     estimation.add_argument('--phase-sigma', type=float, default=0.003)
     estimation.add_argument('--reference-xyz', type=float, nargs=3, metavar=('X','Y','Z'))
+    from gps_processing.processing.selection import METHODS as SELECTION_METHODS, WEIGHTINGS, OBJECTIVES
+    selection = parser.add_argument_group('satellite selection and DOP / weighted-DOP analysis (float PPP)')
+    selection.add_argument('--selection', choices=SELECTION_METHODS, default='all',
+                           help='subset of satellites used in each update: fibo-gnss(+ls) (Fibonacci sphere), backward(+ls), '
+                                'top-cn0, az-sector, random, exhaustive; all = no selection')
+    selection.add_argument('--selection-count', type=int, default=0, help='satellites per epoch (6-40)')
+    selection.add_argument('--selection-weighting', choices=WEIGHTINGS, default='filter',
+                           help='none: classical DOP | elevation: sin^2(el) | cn0: C/N0 | filter: the EKF code variances (WDOP)')
+    selection.add_argument('--selection-objective', choices=OBJECTIVES, default='pdop')
+    selection.add_argument('--selection-interval', type=float, default=0.0, help='s; keep a subset while it stays visible')
+    selection.add_argument('--selection-hysteresis', type=float, default=0.0,
+                           help='change the subset only if the DOP objective improves by this fraction (e.g. 0.05)')
+    selection.add_argument('--no-selection-troposphere', dest='selection_troposphere', action='store_false',
+                           help='leave the ZWD column out of the DOP geometry')
+    selection.add_argument('--selection-analysis', action='store_true',
+                           help='write the DOP/WDOP analysis (visible vs used satellites, corrections) also without selection')
+    selection.add_argument('--selection-seed', type=int, default=0)
     ambiguity = parser.add_argument_group('ambiguity resolution and machine learning')
     ambiguity.add_argument('--integer-method', choices=['lambda','ils','bootstrap','cascade'], default='lambda',
                            help='lambda: ILS+PAR | ils: full ILS (v2.0) | bootstrap: decorrelated IB+PAR | cascade: TCAR/CIR-style rounding')

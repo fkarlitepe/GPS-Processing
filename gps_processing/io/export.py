@@ -24,6 +24,11 @@ def export_result(result, directory):
         tables['residuals'] = result.residuals
     if result.statistics:
         tables['statistics'] = pd.DataFrame([result.statistics])
+    selection = getattr(result, 'selection', None)
+    if selection:
+        tables['selection_epochs'] = selection['epochs']
+        tables['selection_satellites'] = selection['satellites']
+        tables['selection_per_satellite'] = selection['per_satellite']
     from gps_processing import gnss
     # Readable satellite names next to the integer ids (GPS n, Galileo 100+n).
     tables = {name: (table.assign(prn=[gnss.label(s) for s in table.sat]) if 'sat' in table and len(table) and 'prn' not in table else table)
@@ -43,6 +48,10 @@ def export_result(result, directory):
     summary['ar_products_and_settings'] = result.ar_metadata
     summary['settings'] = result.settings
     summary['statistics'] = result.statistics
+    if selection:
+        summary['satellite_selection'] = selection['summary']
+        from gps_processing.analysis import selection_report
+        selection_report(result, directory)
     if 'status' in result.positions:
         summary['solution_status_counts'] = result.positions.status.value_counts().to_dict()
     (directory/'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False, default=float), encoding='utf-8')

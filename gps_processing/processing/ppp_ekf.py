@@ -24,6 +24,7 @@ class EstimationOutput:
     covariance: np.ndarray
     correction: np.ndarray
     residuals: pd.DataFrame
+    selection: dict = None             # satellite-selection / DOP analysis tables (processing.selection)
 
     def __iter__(self):
         return iter((self.positions, self.ambiguities, self.diagnostics, self.covariance, self.correction))
@@ -85,6 +86,17 @@ class IonosphereFreeModel:
         system = (ids > 100).astype(int)*2
         return model, n, np.r_[system, system+1]
 
+    def selection_terms(self, engine, frame):
+        """A-priori model terms of the satellites in the update (selection analysis)."""
+        ids, delays, tropo = frame.sat.to_numpy(dtype=int), self.delays, self.layout.tropo
+        wet = delays.wet*engine.kf.x[tropo] if tropo is not None else 0.0
+        relativity = frame.relativity_m.to_numpy() if 'relativity_m' in frame else np.zeros(len(frame))
+        last = self.residuals[-1]            # post-fit residuals of this epoch (written by record)
+        return dict(code_residual_m=last.code_res.to_numpy(), phase_residual_m=last.phase_res.to_numpy(),
+                    troposphere_slant_m=delays.common+wet, satellite_clock_m=C*frame.dt_sat.to_numpy()*1e-6,
+                    relativity_m=relativity, ionosphere_2nd_code_m=delays.code,
+                    ambiguity_m=[engine.kf.x[self.layout.amb(s)] for s in ids])
+
     def record(self, engine, epoch, frame, slipped, model, report):
         kf, layout, atmosphere, delays = engine.kf, self.layout, engine.atmosphere, self.delays
         ids, n = frame.sat.to_numpy(dtype=int), len(frame)
@@ -121,9 +133,17 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
     layout = Layout(clocks=1, troposphere=options.estimate_troposphere, per_satellite=1)
     weights = variance_model or ElevationModel(options.code_sigma, options.phase_sigma)
     engine = FilterEngine(observations, satellites, approximate_xyz, config, layout, atmosphere, options)
+    from gps_processing.processing.selection import SatelliteSelector, SelectionOptions
+    selection = SelectionOptions.from_config(config)
+    if selection.active or selection.analysis:
+        engine.selector = SatelliteSelector(selection, weights, layout.tropo is not None, getattr(config, 'elevation_mask', 10.0))
     model = IonosphereFreeModel(weights, layout)
     engine.run(model)
     if not model.positions:
         raise ValueError('Çözülebilen epok yok: yükseklik maskesini ve gözlem verilerini kontrol edin.')
+    tables = None
+    if engine.selector is not None and selection.analysis:
+        epochs, sats = engine.selector.tables()
+        tables = dict(epochs=epochs, satellites=sats)
     return EstimationOutput(pd.DataFrame(model.positions), pd.DataFrame(model.ambiguities), pd.DataFrame(engine.diagnostics),
-                            engine.kf.P, engine.correction, pd.concat(model.residuals, ignore_index=True))
+                            engine.kf.P, engine.correction, pd.concat(model.residuals, ignore_index=True), tables)

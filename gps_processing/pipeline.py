@@ -24,6 +24,17 @@ VARIANTS = {
     'AR · Bootstrapping (decorrelated)': dict(integer_method='bootstrap', ar_validation='ratio'),
     'AR · Cascade rounding (TCAR/CIR)': dict(integer_method='cascade', ar_validation='ratio'),
 }
+# Satellite-selection variants (float PPP; the subset size is the run's selection_count, default 8).
+for _label, _method in (('All-in-view', 'all'), ('FIBO-GNSS+LS', 'fibo-gnss+ls'), ('FIBO-GNSS', 'fibo-gnss'),
+                        ('Backward+LS', 'backward+ls'), ('Top C/N0', 'top-cn0'), ('Azimuth sectors', 'az-sector')):
+    for _wlabel, _weighting in (('DOP', 'none'), ('WDOP', 'filter')):
+        if _method == 'all' and _weighting == 'filter':
+            continue
+        if _method in ('top-cn0', 'az-sector') and _weighting == 'none':
+            continue
+        _name = f'Selection · {_label}' + ('' if _method == 'all' else f' ({_wlabel})')
+        VARIANTS[_name] = dict(selection=_method, selection_weighting=_weighting, selection_analysis=True)
+SELECTION_ONLY = {name for name in VARIANTS if name.startswith('Selection ·')}
 AR_ONLY = {name for name in VARIANTS if name.startswith('AR ·')}
 
 
@@ -146,7 +157,7 @@ def estimate(config, orbit, obs, satellites, progress=None):
             progress(50, 'Reading external atmosphere products (IONEX / SINEX_TRO)')
         atmosphere = Atmosphere.from_config(config, obs)
     variance_model = learn_weights(config, obs, satellites, progress, atmosphere) if config.ml_weighting else None
-    residuals, products, validator, fixability = None, None, None, None
+    residuals, products, validator, fixability, selection = None, None, None, None, None
     progress(65, f'{config.technique} · {config.estimator} estimation')
     if config.technique == 'PPP':
         if config.estimator == 'sequential':
@@ -156,7 +167,7 @@ def estimate(config, orbit, obs, satellites, progress=None):
             from gps_processing.processing import ppp_ekf
             output = ppp_ekf.solve(obs.combined, satellites, obs.approximate_xyz, config, variance_model, atmosphere)
             positions, ambiguities, diagnostics, covariance, corrections = output
-            residuals = output.residuals
+            residuals, selection = output.residuals, output.selection
     else:
         from gps_processing.io import products as product_io
         from gps_processing.processing.ar.solver import solve as solve_ar
@@ -180,6 +191,10 @@ def estimate(config, orbit, obs, satellites, progress=None):
             combined, satellites, obs.approximate_xyz, config, variance_model, validator, atmosphere, fixability)
     result = ProcessingResult(positions, ambiguities, diagnostics, covariance, obs, satellites, orbit, corrections, config.technique)
     result.residuals = residuals
+    if selection:
+        from gps_processing.processing.selection import summarise
+        overall, per_satellite = summarise(selection['epochs'], selection['satellites'])
+        result.selection = dict(selection, per_satellite=per_satellite, summary=overall)
     result.settings = settings(config)
     result.settings['clock_jumps'] = obs.clock_jumps
     result.settings.update(models)
@@ -205,6 +220,8 @@ def estimate(config, orbit, obs, satellites, progress=None):
     reference, source = reference_coordinate(config, result)
     result.positions = analysis.add_enu(result.positions, reference)
     result.statistics = analysis.statistics(result.positions, reference, config.technique, source)
+    if result.selection:
+        result.statistics.update(analysis.selection_statistics(result.selection['summary']))
     return result
 
 
@@ -366,7 +383,8 @@ def compare(config, names, progress=None):
     progress = progress or (lambda percent, message: None)
     config.validate()
     config = replace(config, output=run_directory(config.output))
-    names = [n for n in names if config.technique != 'PPP' or n not in AR_ONLY]
+    names = [n for n in names if (config.technique != 'PPP' or n not in AR_ONLY)
+             and (n not in SELECTION_ONLY or (config.technique == 'PPP' and config.estimator != 'sequential'))]
     if not names:
         raise ValueError('Karşılaştırma için en az bir uygun yöntem seçin (AR varyantları PPP-AR tekniği ister).')
     config, _ = network_products(config, progress)
@@ -374,6 +392,8 @@ def compare(config, names, progress=None):
     results, rows = {}, []
     for i, name in enumerate(names):
         overrides = dict(VARIANTS[name])
+        if name in SELECTION_ONLY and overrides['selection'] != 'all' and not config.selection_count:
+            overrides['selection_count'] = 8
         if overrides.get('estimator') == 'sequential' and config.technique == 'PPP':
             overrides.update(ionosphere='', troposphere='', systems=('G',))   # the v2.0 baseline: GPS, no atmosphere models
         variant = replace(config, **overrides, output=Path(config.output)/'comparison'/slug(name))

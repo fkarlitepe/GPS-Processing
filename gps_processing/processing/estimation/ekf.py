@@ -29,6 +29,8 @@ class UpdateReport:
     innovation: np.ndarray = field(default_factory=lambda: np.zeros(0))
     groups: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
     factors: dict = field(default_factory=dict)   # adaptive variance factor per observation class
+    gain: np.ndarray = None      # Kalman gain of the final iteration (x+ = x- + gain @ innovation)
+    design: np.ndarray = None    # design matrix H of the final iteration
 
     @property
     def downweighted(self):
@@ -173,4 +175,4 @@ class ExtendedKalmanFilter:
         cov = identity@prior_cov@identity.T+gain@r@gain.T
         self.x, self.P = state, (cov+cov.T)/2
         nis = float(innovation@np.linalg.solve(s, innovation)/len(innovation))
-        return UpdateReport(nis, alpha, inflation, count, innovation, groups, factors)
+        return UpdateReport(nis, alpha, inflation, count, innovation, groups, factors, gain, h)

@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from gps_processing.models import ProcessingConfig
 from gps_processing.data_directory import DATA_DIR, require_data_file
-from gps_processing.pipeline import run, compare, slug, VARIANTS, AR_ONLY
+from gps_processing.pipeline import run, compare, slug, VARIANTS, AR_ONLY, SELECTION_ONLY
 from gps_processing.processing.ml.ar_validation import CANDIDATES, DEFAULT_MODEL
 from gps_processing.ui.widgets import FileField, LabeledValue, LinePlot
 
@@ -44,6 +44,24 @@ STAT_COLUMNS = [('solution', 'Method', 190), ('final_3d', 'Final 3D (m)', 90), (
                 ('rms_u', 'RMS U', 75), ('rms_3d', 'RMS 3D', 80), ('convergence_s', 'Convergence (min)', 110),
                 ('fix_rate', 'Fix rate', 75), ('mean_nis', 'Mean NIS', 75)]
 MUTED = '#5d7286'
+SELECTION_METHODS = {'All visible (no selection)': 'all', 'FIBO-GNSS + local search (Fibonacci sphere)': 'fibo-gnss+ls',
+                     'FIBO-GNSS (Fibonacci sphere)': 'fibo-gnss', 'Greedy backward elimination + local search': 'backward+ls',
+                     'Greedy backward elimination': 'backward', 'Highest C/N0': 'top-cn0', 'Azimuth sectors (quasi-optimal)': 'az-sector',
+                     'Random subset (lower bound)': 'random', 'Exhaustive search (small sets)': 'exhaustive'}
+SELECTION_WEIGHTS = {'Filter weights — WDOP with the EKF code variances': 'filter', 'Elevation — sin²(el)': 'elevation',
+                     'C/N0 — σ² = a·10^(−C/N0/10)': 'cn0', 'None — classical (unweighted) DOP': 'none'}
+SELECTION_PLOTS = {
+    'PDOP and WPDOP — all vs selected': (['pdop_all', 'pdop_selected', 'wpdop_all', 'wpdop_selected'],
+                                         ['PDOP all', 'PDOP selected', 'WPDOP all', 'WPDOP selected'], False),
+    'GDOP and WGDOP': (['gdop_all', 'gdop_selected', 'wgdop_all', 'wgdop_selected'], ['GDOP all', 'GDOP selected', 'WGDOP all', 'WGDOP selected'], False),
+    'HDOP / VDOP of the selected subset': (['hdop_selected', 'vdop_selected', 'whdop_selected', 'wvdop_selected'], ['HDOP', 'VDOP', 'WHDOP', 'WVDOP'], False),
+    'Visible and selected satellites': (['visible', 'selected', 'selected_gps', 'selected_galileo'], ['Visible', 'Selected', 'GPS selected', 'Galileo selected'], False),
+    'Selection time (ms)': (['selection_ms'], ['ms per epoch'], False),
+}
+SELECTION_COLUMNS = ('prn', 'visible_epochs', 'selected_share', 'mean_elevation', 'mean_cn0', 'mean_weight', 'median_correction_3d_mm',
+                     'rms_code_residual_m', 'rms_phase_residual_mm', 'median_delta_dop_selected', 'median_delta_dop_excluded')
+EPOCH_COLUMNS = ('prn', 'elevation', 'azimuth', 'cn0', 'weight', 'selected', 'delta_dop', 'correction_e_m', 'correction_n_m',
+                 'correction_u_m', 'code_residual_m', 'phase_residual_m', 'troposphere_slant_m', 'satellite_clock_m', 'relativity_m')
 COMPARE_PLOTS = {'3D error (m)': ('error_3d', True), 'Horizontal error (m)': ('error_h', True), 'Up (m)': ('up', False),
                  'NIS': ('nis', True), 'Formal σZ (m)': ('sigma_z', True)}
 
@@ -366,6 +384,27 @@ class Application(tk.Tk):
                                            wraplength=950, foreground=MUTED), anchor='w', pady=(6,0))
         self.ml_weighting.widget.configure(command=self.update_states)
 
+        sel = self.selection_section = section('Satellite selection and DOP / weighted-DOP analysis (float PPP)')
+        rows = self.rows[sel]
+        self.row(rows, ttk.Label(sel, wraplength=950, foreground=MUTED, justify='left', text=
+                 'Every epoch, after the elevation mask and the cycle-slip check (which still see all visible satellites), only the '
+                 'chosen number of satellites enters the filter update. The subset minimises a DOP of the PPP geometry '
+                 '(E, N, U, one receiver clock per system and the ZWD column): classical DOP with W = I, or weighted DOP '
+                 '(WDOP, Q = (GᵀWG)⁻¹) with elevation, C/N0 or the filter\'s own code variances. FIBO-GNSS generates 48 candidate '
+                 'subsets from rotated Fibonacci-sphere directions and keeps the best one. The analysis (Results → Satellite selection) '
+                 'lists the visible and used satellites, DOP/WDOP, each satellite\'s DOP value and its share of the Kalman correction.'),
+                 anchor='w', pady=(0,6))
+        self.selection = self.row(rows, LabeledValue(sel, 'Selection method', 'choice', list(SELECTION_METHODS)[0], SELECTION_METHODS, width=30))
+        self.selection_count = self.row(rows, LabeledValue(sel, 'Satellites per epoch', 'int', 8, hint='6 … 40 (GPS + Galileo PPP: at least 6)'))
+        self.selection_weighting = self.row(rows, LabeledValue(sel, 'DOP weighting', 'choice', list(SELECTION_WEIGHTS)[0], SELECTION_WEIGHTS, width=30))
+        self.selection_objective = self.row(rows, LabeledValue(sel, 'Objective', 'choice', 'pdop', ['pdop', 'gdop', 'hdop', 'vdop']))
+        self.selection_interval = self.row(rows, LabeledValue(sel, 'Keep a subset for', 'float', 0.0, step=30, hint='s, while all its satellites stay visible (0 = re-select every epoch)'))
+        self.selection_hysteresis = self.row(rows, LabeledValue(sel, 'Hysteresis', 'float', 0.05, step=0.01, hint='switch only if the DOP improves by this fraction (keeps phase arcs)'))
+        self.selection_troposphere = self.row(rows, LabeledValue(sel, 'ZWD column in the DOP geometry', 'bool', True))
+        self.selection_analysis = self.row(rows, LabeledValue(sel, 'DOP analysis without selection', 'bool', True,
+                                                              hint='write the analysis tables also when all satellites are used'))
+        self.selection.widget.bind('<<ComboboxSelected>>', lambda event: self.update_states())
+
         ref = section('Validation reference')
         row = self.row(self.rows[ref], ttk.Frame(ref), fill='x')
         ttk.Label(row, text='Reference X Y Z (m, ECEF)', width=30).pack(side='left')
@@ -402,7 +441,10 @@ class Application(tk.Tk):
         self.metrics = ttk.Label(output, text='', style='Metric.TLabel'); self.metrics.pack(anchor='w', pady=(0,8))
         inner = ttk.Notebook(output); inner.pack(fill='both', expand=True)
         graph = ttk.Frame(inner, padding=8); table = ttk.Frame(inner, padding=8); diag = ttk.Frame(inner, padding=8)
+        selection = ttk.Frame(inner, padding=8)
         inner.add(graph, text='Plot'); inner.add(table, text='Position table'); inner.add(diag, text='Diagnostics / AR')
+        inner.add(selection, text='Satellite selection / DOP')
+        self.build_selection_output(selection)
         row = ttk.Frame(graph); row.pack(fill='x', pady=(0,6))
         ttk.Label(row, text='Quantity').pack(side='left')
         self.plot_choice = ttk.Combobox(row, values=list(PLOTS), state='readonly', width=32)
@@ -414,6 +456,77 @@ class Application(tk.Tk):
         self.diagnostics = self.treeview(diag, ('epok','status','reason','satellites','wl_ratio','n1_ratio','wl_success','wl_success_upper','n1_success','n1_success_upper','fixed_pairs','nis'), 100)
         self.log=tk.Text(output,height=5,bg='#172c43',fg='#dcebf7',font=('DejaVu Sans Mono',9),state='disabled')
         self.log.pack(fill='x',pady=(10,0))
+
+    def build_selection_output(self, panel):
+        self.selection_summary = ttk.Label(panel, text='Run float PPP with a selection method or with "DOP analysis without selection".',
+                                           wraplength=1050, justify='left')
+        self.selection_summary.pack(anchor='w', pady=(0,6))
+        row = ttk.Frame(panel); row.pack(fill='x', pady=(0,6))
+        ttk.Label(row, text='Quantity').pack(side='left')
+        self.selection_plot_choice = ttk.Combobox(row, values=list(SELECTION_PLOTS), state='readonly', width=36)
+        self.selection_plot_choice.set(list(SELECTION_PLOTS)[0]); self.selection_plot_choice.pack(side='left', padx=8)
+        self.selection_plot_choice.bind('<<ComboboxSelected>>', lambda event: self.show_selection_plot())
+        self.selection_plot = LinePlot(panel, height=230); self.selection_plot.pack(fill='x')
+        tables = ttk.Notebook(panel); tables.pack(fill='both', expand=True, pady=(6,0))
+        per, epoch = ttk.Frame(tables, padding=4), ttk.Frame(tables, padding=4)
+        tables.add(per, text='Per satellite (whole session)'); tables.add(epoch, text='One epoch: visible and used satellites')
+        self.selection_table = self.treeview(per, SELECTION_COLUMNS, 95)
+        row = ttk.Frame(epoch); row.pack(fill='x', pady=(0,4))
+        ttk.Label(row, text='Epoch (s of day)').pack(side='left')
+        self.selection_epoch = tk.StringVar(value='0')
+        ttk.Spinbox(row, textvariable=self.selection_epoch, from_=0, to=86400, increment=30, width=10,
+                    command=self.show_selection_epoch).pack(side='left', padx=8)
+        ttk.Button(row, text='Show', command=self.show_selection_epoch).pack(side='left')
+        self.selection_epoch_info = ttk.Label(row, text='', foreground=MUTED); self.selection_epoch_info.pack(side='left', padx=12)
+        self.selection_epoch_table = self.treeview(epoch, EPOCH_COLUMNS, 85)
+
+    def show_selection(self, result):
+        sel = getattr(result, 'selection', None)
+        for tree in (self.selection_table, self.selection_epoch_table):
+            for item in tree.get_children(): tree.delete(item)
+        if not sel:
+            self.selection_summary.configure(text='No selection / DOP analysis in this run.')
+            self.selection_plot.plot([], '', '')
+            return
+        s = sel['summary']
+        self.selection_summary.configure(text=
+            f'{s["method"]} · weights {s["weighting"]} · objective {s["objective"].upper()} · {s["epochs"]} epochs   |   '
+            f'satellites visible {s["mean_visible"]:.1f} → used {s["mean_selected"]:.1f}   |   median PDOP {self.fmt(s["median_pdop_all"])} → '
+            f'{self.fmt(s["median_pdop_selected"])}   |   median WPDOP {self.fmt(s["median_wpdop_all"])} → {self.fmt(s["median_wpdop_selected"])}   |   '
+            f're-selections {s["reselections"]} · {self.fmt(s["mean_selection_ms"], 1)} ms/epoch   |   report: selection_report.md')
+        for _, row in sel['per_satellite'].iterrows():
+            self.selection_table.insert('', 'end', values=[self.fmt(row[c]) if c != 'prn' and c in row else row.get(c, '—') for c in SELECTION_COLUMNS])
+        epochs = sel['epochs']
+        if len(epochs):
+            self.selection_epoch.set(str(int(epochs.epok.iloc[len(epochs)//2])))
+        self.show_selection_plot()
+        self.show_selection_epoch()
+
+    def show_selection_plot(self):
+        sel = getattr(self.result, 'selection', None) if self.result is not None else None
+        if not sel: return
+        columns, labels, log = SELECTION_PLOTS[self.selection_plot_choice.get()]
+        frame = sel['epochs']
+        series = [(label, frame.epok, frame[c].replace([np.inf, -np.inf], np.nan)) for c, label in zip(columns, labels) if c in frame]
+        self.selection_plot.plot(series, self.selection_plot_choice.get(), self.selection_plot_choice.get(), log=log)
+
+    def show_selection_epoch(self):
+        sel = getattr(self.result, 'selection', None) if self.result is not None else None
+        if not sel: return
+        sats = sel['satellites']
+        try:
+            wanted = float(self.selection_epoch.get())
+        except ValueError:
+            return
+        epochs = sats.epok.unique()
+        epoch = epochs[np.argmin(np.abs(epochs-wanted))]
+        part = sats[sats.epok == epoch].sort_values(['selected', 'prn'], ascending=[False, True])
+        for item in self.selection_epoch_table.get_children(): self.selection_epoch_table.delete(item)
+        for _, row in part.iterrows():
+            self.selection_epoch_table.insert('', 'end', values=[('yes' if row[c] else 'no') if c == 'selected' else
+                                                                 (self.fmt(row[c]) if c in row and c != 'prn' else row.get(c, '—')) for c in EPOCH_COLUMNS])
+        self.selection_epoch_info.configure(text=f'epoch {epoch:.0f} s: {len(part)} visible, {int(part.selected.sum())} used. '
+                                                 'delta_dop: DOP increase if a used satellite is removed / change if an unused one were added.')
 
     def build_comparison(self, panel):
         ttk.Label(panel, text='Runs the selected methods side by side on the same data; each one is written to comparison/<method> in the output folder.\n'
@@ -473,6 +586,10 @@ class Application(tk.Tk):
                 hidden |= {self.code_sigma, self.phase_sigma, self.atmosphere_section}
         else:
             hidden.add(self.sequential_info)
+        if ar or not ekf:
+            hidden.add(self.selection_section)
+        elif SELECTION_METHODS[self.selection.get()] == 'all':
+            hidden |= {self.selection_count, self.selection_weighting, self.selection_objective, self.selection_interval, self.selection_hysteresis}
         if not (ekf and self.dynamics.get() == 'kinematic'):
             hidden.add(self.position_noise)
         if not tropo:
@@ -495,6 +612,8 @@ class Application(tk.Tk):
         for name, box in getattr(self, 'variant_boxes', {}).items():
             if name in AR_ONLY:
                 box.grid() if ar else box.grid_remove()
+            if name in SELECTION_ONLY:
+                box.grid() if (not ar and ekf) else box.grid_remove()
 
     def visible_sections(self):
         return [frame for frame in self.sections if frame.winfo_manager()]
@@ -578,9 +697,19 @@ class Application(tk.Tk):
             ar_min_elevation=self.ar_min_elevation.get(), ar_min_arc=self.ar_min_arc.get(), ar_hold=self.ar_hold.get(),
             ar_hold_epochs=self.ar_hold_epochs.get(), ar_fixability=self.ar_fixability.get(), fcb_hold_coordinates=self.fcb_hold.get(),
             fcb_min_contributors=self.fcb_min_contributors.get(), fcb_workers=self.fcb_workers.get(),
-            reference_xyz=tuple(float(v) for v in reference) if reference else None)
+            reference_xyz=tuple(float(v) for v in reference) if reference else None,
+            **self.selection_values())
         config.validate()
         return config
+
+    def selection_values(self):
+        if self.selection_section not in self.visible_sections():
+            return {}
+        method = SELECTION_METHODS[self.selection.get()]
+        return dict(selection=method, selection_count=self.selection_count.get() if method != 'all' else 0,
+                    selection_weighting=SELECTION_WEIGHTS[self.selection_weighting.get()], selection_objective=self.selection_objective.get(),
+                    selection_interval=self.selection_interval.get(), selection_hysteresis=self.selection_hysteresis.get(),
+                    selection_troposphere=self.selection_troposphere.get(), selection_analysis=self.selection_analysis.get())
 
     def launch(self, job, tab):
         if self.busy: return
@@ -720,6 +849,7 @@ class Application(tk.Tk):
             for _, row in frame.iterrows():
                 tree.insert('', 'end', values=[self.fmt(row[c]) if c in row and isinstance(row[c], (int, float, np.number)) and not isinstance(row[c], bool) else row.get(c, '—') for c in tree['columns']])
         self.show_plot()
+        self.show_selection(result)
 
     def show_plot(self):
         if self.result is None: return

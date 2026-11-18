@@ -116,6 +116,17 @@ class ProcessingConfig:
     ml_threshold: float = 0.99
     ml_validator: str = ''
 
+    # Satellite selection and DOP / weighted-DOP analysis (float PPP, processing.selection).
+    selection: str = 'all'            # all / top-cn0 / az-sector / random / backward(+ls) / fibo-gnss(+ls) / exhaustive
+    selection_count: int = 0          # satellites per epoch kept for the update (0: all)
+    selection_weighting: str = 'filter'   # none (DOP) / elevation / cn0 / filter (weighted DOP, WDOP)
+    selection_objective: str = 'pdop'     # pdop / gdop / hdop / vdop
+    selection_interval: float = 0.0   # s; keep a subset this long while its satellites stay visible
+    selection_hysteresis: float = 0.0 # change the subset only if the objective improves by this fraction
+    selection_troposphere: bool = True    # ZWD column in the DOP geometry
+    selection_analysis: bool = False  # per-epoch / per-satellite analysis tables also without selection
+    selection_seed: int = 0
+
     reference_xyz: tuple = None
     hold_coordinates: bool = False    # position held at reference_xyz (NL diagnostics, network stations)
 
@@ -165,6 +176,11 @@ class ProcessingConfig:
             raise ValueError('ML ağırlıklandırma EKF kestiricisi gerektirir.')
         if self.ml_validator:
             require_data_file(self.ml_validator)
+        from gps_processing.processing.selection import SelectionOptions
+        selection = SelectionOptions.from_config(self)
+        selection.validate()
+        if (selection.active or self.selection_analysis) and (self.technique != 'PPP' or self.estimator == 'sequential'):
+            raise ValueError('Uydu seçimi ve DOP analizi float PPP (EKF kestiricisi) içindir.')
         if self.reference_xyz is not None:
             reference = np.asarray(self.reference_xyz, dtype=float)
             if reference.shape != (3,) or not np.isfinite(reference).all() or np.linalg.norm(reference) < 6e6:
@@ -213,3 +229,4 @@ class ProcessingResult:
     ml_models: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     output_dir: Path = None      # this process's own folder: <output>/<year>_<doy>_<HHMMSS>
+    selection: dict = None       # satellite-selection / DOP analysis: epochs, satellites, per_satellite, summary

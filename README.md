@@ -16,9 +16,13 @@ python3 -m experiments.run_grid network results/experiments/network_fcb/fcb   # 
 python3 -m experiments.run_grid ablation            # contribution of each component
 python3 experiments/analyse.py products|network|ablation|nl   # tables, statistics and figures
 python3 experiments/station_map.py                  # station map (requires PyGMT)
+python3 -m experiments.run_selection                # Experiment S: satellite selection, DOP vs WDOP (8 stations)
+python3 experiments/analyse_selection.py
 ```
 
 Set `OMP_NUM_THREADS=1` when running the grids in parallel. Results are written to `results/experiments/`.
+
+**v3.0 (uydu seçimi ve DOP / ağırlıklı DOP analizi):** Float PPP'de her epokta yalnız k uydu güncellemeye girer (`--selection fibo-gnss+ls --selection-count 8`). Seçim, PPP geometrisinin (E, N, U, sistem başına alıcı saati, ZWD) klasik DOP'unu veya ağırlıklı DOP'unu (WDOP, `--selection-weighting none|elevation|cn0|filter`) en küçükler. Yöntemler: FIBO-GNSS (Fibonacci küresi adayları) ve yerel arama, geri eleme, en yüksek C/N0, azimut dilimleri, rastgele, tam tarama. Faz yaylarını korumak için histerezis ve tutma süresi seçenekleri var. Analiz bölümü: görünen/kullanılan uydular, epok başına DOP/WDOP, her uydunun DOP değeri, model terimleri, artıklar ve Kalman düzeltmesindeki payı (`selection_report.md`, `selection_*.csv`, SVG grafikler; arayüzde *Results → Satellite selection / DOP*). Ayrıntılar ve deney: [uydu seçimi belgesi](docs/SELECTION.md).
 
 **v2.1:** Kestirim noktalarına iterasyonlu **genişletilmiş Kalman filtresi** (statik/kinematik, ZWD kestirimi, IGG-III robust ve adaptif güncelleme), **LAMBDA + kısmi AR** ve iki **makine öğrenmesi** bileşeni (artıklardan öğrenilen gözlem varyansı, Monte Carlo ile eğitilmiş AR doğrulayıcı) eklendi; arayüze yöntem ayarları, grafikler ve **yöntem karşılaştırması** sekmesi geldi. Denklemler, örnek sonuçlar ve deney tasarımı: [EKF ve ML belgesi](docs/EKF_ML.md).
 
@@ -101,7 +105,8 @@ Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü a
 | PPP-AR | `gps_processing/processing/ar/` | SDBS/DCM/IPC kullanıcı modeli, LAMBDA/bootstrapping PAR, `policy.py`: P0 sıralama, FFRT, uydu dışlama, fix-and-hold |
 | NL teşhisi | `gps_processing/processing/diagnostics.py` | Koordinat sabit, float N1 kesirlerinin dağılımı; ürün/model tutarlılığı |
 | Makine öğrenmesi | `gps_processing/processing/ml/` | GBRT stokastik model, bias'a duyarlı AR doğrulayıcı, kendi kendini eğiten çözülebilirlik modeli (`fixability.py`) |
-| Analiz | `gps_processing/analysis.py` | ENU hataları, yakınsama süresi, yöntem istatistikleri |
+| Analiz | `gps_processing/analysis.py` | ENU hataları, yakınsama süresi, yöntem istatistikleri, uydu seçimi / DOP raporu |
+| Uydu seçimi | `gps_processing/processing/selection.py` | DOP/WDOP (toplu), FIBO-GNSS, geri eleme, yerel arama; epok ve uydu analiz tabloları |
 | Dışa aktarım | `gps_processing/io/export.py` | CSV, çok sayfalı Excel ve JSON özet |
 | İşlem servisi | `gps_processing/pipeline.py` | Tüm aşamaların açık veri akışı ve ilerleme olayları |
 | CLI | `gps_processing/cli.py` | Dosya yolları ve işlem seçenekleri |

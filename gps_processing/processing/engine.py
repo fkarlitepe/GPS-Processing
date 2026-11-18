@@ -59,6 +59,7 @@ class FilterEngine:
         self.kf = ExtendedKalmanFilter(state, np.diag(variances))
         self.detector = SlipDetector(gf_jump=getattr(config, 'gf_slip_m', .05) if self.options.is_ekf else None)
         self.diagnostics, self.correction = [], np.zeros(layout.dim)
+        self.selector = None              # processing.selection.SatelliteSelector (float PPP)
 
     def satellite_terms(self, epoch, frame):
         """Coordinates, slant delays and the satellite relativistic clock term (m, per row)."""
@@ -87,6 +88,13 @@ class FilterEngine:
             for sat in slipped:
                 model.reset_arc(self, int(sat), epoch, frame)
             model.prepare(self, epoch, frame, slipped)
+            if self.selector is not None:
+                # Slip detection and arc bookkeeping above see every visible satellite; only the update
+                # uses the selected subset (the ambiguities of excluded satellites are kept, unobserved).
+                frame = self.selector.select(epoch, frame, kf.x[:3])
+                if len(frame) < model.min_satellites(frame):
+                    self.diagnostics.append(dict(epok=epoch, status='skipped', reason='too_few_selected', satellites=len(frame)))
+                    continue
             function, groups, classes = model.measurements(self, epoch, frame)
             prior = kf.x.copy()
             # Fading of the position covers dynamic-model errors, so only a kinematic receiver gets it; in
@@ -97,6 +105,9 @@ class FilterEngine:
                                adaptive_indices=fading, classes=classes)
             self.correction = kf.x-prior
             model.record(self, epoch, frame, slipped, function, report)
+            if self.selector is not None:
+                terms = model.selection_terms(self, frame) if hasattr(model, 'selection_terms') else None
+                self.selector.record_update(epoch, frame, kf.x[:3], report, terms, self.layout.all_clocks)
         return self
 
 

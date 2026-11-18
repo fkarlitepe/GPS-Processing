@@ -200,6 +200,15 @@ def read_rinex(path):
     # Geometry-free phase (metres) for cycle-slip checks; SNR (dB-Hz) is an ML feature.
     combined['GF'] = l1 - l2
     combined['snr1'], combined['snr2'] = snr1, snr2
+    # C/N0 of the open-service L1/E1 signal (GPS S1C, Galileo S1C/S1X): comparable between systems,
+    # unlike the semi-codeless S1W of some receivers; used by the satellite selection (C/N0 weights).
+    cn0 = pd.Series(np.nan, index=raw.index)
+    for system, names in (('G', ('s1c', 's1l', 's1x')), ('E', ('s1c', 's1x'))):
+        for name in names:
+            if name in raw:
+                rows = raw.system.eq(system) & cn0.isna() & raw[name].gt(0)
+                cn0.loc[rows] = raw.loc[rows, name]
+    combined['cn0'] = cn0.fillna(snr1)
     prior_signals = combined.groupby('sat')['signals'].shift()
     combined['epoch_reset'] |= prior_signals.notna() & combined['signals'].ne(prior_signals)
     combined = combined.replace([np.inf, -np.inf], np.nan).dropna(subset=['Pc', 'Lc', 'A4'])
