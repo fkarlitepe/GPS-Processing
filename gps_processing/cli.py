@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--output', type=Path, default=Path('results'))
     parser.add_argument('--elevation-mask', type=float, default=10)
     parser.add_argument('--technique', choices=['PPP','PPP-AR/SDBS','PPP-AR/DCM','PPP-AR/IPC'], default='PPP')
-    parser.add_argument('--systems', nargs='+', choices=['G', 'E'], default=['G'],
+    parser.add_argument('--systems', nargs='+', choices=['G', 'E', 'C'], default=['G'],
                         help='satellite systems: G = GPS (L1/L2), E = Galileo (E1/E5a; needs multi-GNSS SP3/CLK)')
     parser.add_argument('--ar-products', default='', help='normalized JSON product or Bias-SINEX code+phase OSB file (*.BIA)')
     parser.add_argument('--clock-file', default='', help='RINEX clock file (30 s / 5 s) replacing the SP3 clocks')
@@ -44,6 +44,18 @@ def main():
                             help='troposphere mapping function (Saastamoinen ZHD a priori, residual ZWD estimated)')
     estimation.add_argument('--no-physical-corrections', dest='physical_corrections', action='store_false')
     estimation.add_argument('--no-robust', dest='robust', action='store_false')
+    quality = parser.add_argument_group('quality control: outlier tests and robust estimation (EKF update)')
+    quality.add_argument('--robust-method', choices=['igg3', 'huber', 'danish'], default='igg3',
+                         help='weight function of the robust update: IGG-III (Yang 1994), Huber (1964), Danish (Krarup et al. 1980)')
+    quality.add_argument('--huber-k', type=float, default=1.5, help='Huber constant k (standardized residuals)')
+    quality.add_argument('--danish-c', type=float, default=2.0, help='Danish constant c (standardized residuals)')
+    quality.add_argument('--outlier-test', choices=['none', 'global', 'baarda', 'pope'], default='none',
+                         help='global: chi-square model test (flag only) | baarda: data snooping, B-method | pope: tau test; '
+                              'identified satellites are excluded one at a time')
+    quality.add_argument('--test-alpha', type=float, default=0.001, help='Baarda local level alpha0')
+    quality.add_argument('--test-power', type=float, default=0.80, help='Baarda B-method power 1-beta0')
+    quality.add_argument('--global-alpha', type=float, default=0.01, help='level of the global test (global / pope)')
+    quality.add_argument('--max-exclusions', type=int, default=3, help='satellites excluded per epoch at most')
     estimation.add_argument('--code-sigma', type=float, default=0.3)
     estimation.add_argument('--phase-sigma', type=float, default=0.003)
     estimation.add_argument('--reference-xyz', type=float, nargs=3, metavar=('X','Y','Z'))
@@ -64,6 +76,11 @@ def main():
     selection.add_argument('--selection-analysis', action='store_true',
                            help='write the DOP/WDOP analysis (visible vs used satellites, corrections) also without selection')
     selection.add_argument('--selection-seed', type=int, default=0)
+    selection.add_argument('--selection-state', choices=['keep', 'drop'], default='keep',
+                           help='keep: ambiguities of unselected satellites stay in the filter; drop: they are removed '
+                                'and the satellites re-initialised when selected again (smaller filter)')
+    selection.add_argument('--selection-warm-start', action='store_true',
+                           help='FIBO-GNSS: the previous subset is an extra candidate')
     ambiguity = parser.add_argument_group('ambiguity resolution and machine learning')
     ambiguity.add_argument('--integer-method', choices=['lambda','ils','bootstrap','cascade'], default='lambda',
                            help='lambda: ILS+PAR | ils: full ILS (v2.0) | bootstrap: decorrelated IB+PAR | cascade: TCAR/CIR-style rounding')

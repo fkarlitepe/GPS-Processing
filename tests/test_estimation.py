@@ -268,3 +268,86 @@ class AnalysisAndPipelineTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class QualityControlTests(unittest.TestCase):
+    """Global chi-square test, Baarda data snooping, Pope tau test, Huber and Danish robust estimation."""
+
+    def setUp(self):
+        from gps_processing.processing.estimation import quality
+        self.q = quality
+        rng = np.random.default_rng(3)
+        self.t = np.linspace(0, 10, 25)
+        self.A = np.column_stack([np.ones_like(self.t), self.t])
+        self.truth = np.array([2.0, 0.5])
+        self.l = self.A@self.truth+rng.normal(0, 0.01, len(self.t))
+        self.Q = np.eye(len(self.t))*0.01**2
+
+    def test_critical_values(self):
+        q = self.q
+        self.assertAlmostEqual(q.baarda_lambda(0.001, 0.80), 17.07, delta=0.01)
+        # one observation: the B-method global test is the local two-sided w-test
+        self.assertAlmostEqual(q.b_method_alpha(1, 0.001, 0.80), 0.001, delta=2e-4)
+        self.assertGreater(q.b_method_alpha(20, 0.001, 0.80), 0.001)
+        # tau tends to the normal quantile for many degrees of freedom and is bounded by sqrt(df)
+        self.assertAlmostEqual(q.tau_critical(5000, 0.001), 3.29, delta=0.01)
+        self.assertLess(q.tau_critical(4, 0.05), 2.0)
+
+    def test_weight_functions(self):
+        q = self.q
+        np.testing.assert_allclose(q.huber(np.array([1.0, 3.0]), 1.5), [1.0, 2.0])
+        np.testing.assert_allclose(q.danish(np.array([1.9, 2.0])), 1.0)
+        self.assertAlmostEqual(1/q.danish(np.array([4.0]), 2.0)[0], np.exp(-3), places=10)
+        np.testing.assert_allclose(q.robust_inflation('igg3', np.array([7.])), 1e8)
+
+    def test_global_test_size(self):
+        """False-alarm rate of the chi-square test without outliers is close to its level."""
+        rng = np.random.default_rng(1)
+        options = self.q.QualityOptions(test='global', global_alpha=0.05)
+        rejected = [not self.q.least_squares(self.A, self.A@self.truth+rng.normal(0, .01, len(self.t)), self.Q,
+                                             options).test.passed for _ in range(800)]
+        self.assertAlmostEqual(np.mean(rejected), 0.05, delta=0.025)
+
+    def test_baarda_and_pope_identify_blunder(self):
+        l = self.l.copy(); l[7] += 0.12
+        for test in ('baarda', 'pope'):
+            out = self.q.least_squares(self.A, l, self.Q, self.q.QualityOptions(test=test))
+            self.assertFalse(out.test.first_passed, test)
+            self.assertEqual(out.test.excluded[0], 7, test)   # Baarda also rejects obs. 9 (w = 3.5 without the blunder)
+            self.assertTrue(out.test.passed, test)
+            np.testing.assert_allclose(out.x, self.truth, atol=0.01)
+        flagged = self.q.least_squares(self.A, l, self.Q, self.q.QualityOptions(test='global'))
+        self.assertFalse(flagged.test.passed)
+        self.assertEqual(flagged.test.excluded, [])
+
+    def test_huber_and_danish_reduce_blunder_influence(self):
+        l = self.l.copy(); l[3] += 0.5
+        plain = self.q.least_squares(self.A, l, self.Q)
+        for method in ('huber', 'danish', 'igg3'):
+            out = self.q.least_squares(self.A, l, self.Q, robust=method)
+            self.assertLess(np.abs(out.x-self.truth).max(), np.abs(plain.x-self.truth).max()/5, method)
+            self.assertLess(out.weights[3], 0.2, method)
+
+    def test_filter_tests_exclude_code_outlier(self):
+        obs, sat = sky(RECEIVER, epochs=3, outlier=(1, 3))
+        start = RECEIVER+np.array([3., 2, -1])
+        error = lambda p: np.linalg.norm(p[['x', 'y', 'z']].to_numpy(float)-RECEIVER)
+        plain = ppp_ekf.solve(obs, sat, start, config(robust=False)).positions.iloc[1]
+        for test in ('baarda', 'pope'):
+            out = ppp_ekf.solve(obs, sat, start, config(robust=False, outlier_test=test)).positions
+            row = out.iloc[1]
+            self.assertFalse(row.qc_first_passed, test)
+            self.assertEqual(str(row.qc_excluded_sats), '3', test)
+            self.assertLess(error(row), error(plain)/5, test)
+            self.assertTrue(out.iloc[[0, 2]].qc_first_passed.all(), test)
+        for method in ('huber', 'danish'):
+            row = ppp_ekf.solve(obs, sat, start, config(robust=True, robust_method=method)).positions.iloc[1]
+            self.assertLess(error(row), error(plain)/5, method)
+
+    def test_defaults_unchanged(self):
+        """No test and IGG-III: identical to the update without quality options."""
+        obs, sat = sky(RECEIVER, epochs=5, outlier=(2, 4))
+        a = ppp_ekf.solve(obs, sat, RECEIVER, config()).positions
+        b = ppp_ekf.solve(obs, sat, RECEIVER, config(outlier_test='none', robust_method='igg3')).positions
+        np.testing.assert_allclose(a[['x', 'y', 'z']].to_numpy(float), b[['x', 'y', 'z']].to_numpy(float))
+        self.assertNotIn('qc_T', a.columns)

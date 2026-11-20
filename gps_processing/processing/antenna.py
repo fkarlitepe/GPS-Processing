@@ -16,8 +16,8 @@ LAMBDA_NL = C/(F1+F2)
 IF1, IF2 = F1**2/(F1**2-F2**2), -F2**2/(F1**2-F2**2)
 # ANTEX frequency codes of the two carriers per system; receivers calibrated for GPS only use
 # the GPS values for Galileo (G01 for E1, G02 for E5a), the usual IGS fallback.
-ANTEX_FREQUENCIES = {'G': ('G01', 'G02'), 'E': ('E01', 'E05')}
-FALLBACK = {'E01': 'G01', 'E05': 'G02'}
+ANTEX_FREQUENCIES = {'G': ('G01', 'G02'), 'E': ('E01', 'E05'), 'C': ('C02', 'C06')}
+FALLBACK = {'E01': 'G01', 'E05': 'G02', 'C02': 'G01', 'C06': 'G02'}
 
 
 def sun_position(epochs, date):
@@ -106,7 +106,10 @@ def satellite_pcv(antennas, combined, los, xyz, date):
     nadir = np.degrees(np.arccos(np.clip(np.sum(-xyz/np.linalg.norm(xyz, axis=1)[:, None]*los, axis=1), -1, 1)))
     sats = combined.sat.to_numpy()
     for sat in np.unique(sats):
-        item = satellite_antenna(antennas, int(sat), date)
+        try:
+            item = satellite_antenna(antennas, int(sat), date)
+        except ValueError:
+            continue
         system = gnss.system_of(sat)
         one, two = ANTEX_FREQUENCIES[system]
         if item.zenith is None or one not in item.pcv:
@@ -140,8 +143,13 @@ def apply_antenna_models(combined, satellites, receiver_xyz, date, antennas=None
                     attitude_off_nominal_epochs=int((yaw_change > 5).sum()))
     if antennas is not None:
         offsets = np.zeros_like(xyz)
+        missing = []
         for sat in satellites.sat.unique():
-            item = satellite_antenna(antennas, int(sat), date)
+            try:
+                item = satellite_antenna(antennas, int(sat), date)
+            except ValueError:
+                missing.append(int(sat))                         # no ANTEX entry (e.g. a new satellite): not used
+                continue
             k = gnss.constants(gnss.system_of(sat))
             one, two = ANTEX_FREQUENCIES[gnss.system_of(sat)]
             pco = k['if1']*item.offset[one]+k['if2']*item.offset.get(two, item.offset[one])
@@ -150,6 +158,9 @@ def apply_antenna_models(combined, satellites, receiver_xyz, date, antennas=None
         satellites[['x', 'y', 'z']] = xyz+offsets               # centre of mass -> IF phase centre
         xyz = xyz+offsets
         info['satellite_pco'] = True
+        if missing:
+            combined = combined[~combined.sat.isin(missing)].reset_index(drop=True)
+            info['satellites_without_antex'] = ','.join(gnss.label(s) for s in missing)
     merged = combined[['epok', 'sat']].merge(satellites.assign(row=np.arange(len(satellites)))[['epok', 'sat', 'row']],
                                              on=['epok', 'sat'], how='left', validate='one_to_one')
     if merged.row.isna().any():
@@ -171,7 +182,7 @@ def apply_antenna_models(combined, satellites, receiver_xyz, date, antennas=None
         antenna = antennas.get(receiver_type[:20].strip()) or antennas.get((receiver_type[:16].ljust(16)+'NONE').strip())
         correction, mw = np.zeros(len(combined)), np.zeros(len(combined))
         for system in gnss.SYSTEMS:
-            rows_s = (combined.sat > 100).to_numpy() if system == 'E' else (combined.sat <= 100).to_numpy()
+            rows_s = gnss.systems_of(combined.sat.to_numpy()) == system
             if rows_s.any():
                 correction[rows_s], mw[rows_s] = receiver_correction(antenna, np.asarray(delta_hen, float), los[rows_s],
                                                                      receiver_xyz, system)

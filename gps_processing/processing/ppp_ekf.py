@@ -32,6 +32,7 @@ class EstimationOutput:
 
 class IonosphereFreeModel:
     """Observation plug-in: IF code and phase rows, one IF ambiguity (m) per satellite."""
+    active_states = True                  # the engine may restrict the update to the satellites in the filter
 
     def __init__(self, weights, layout):
         self.weights, self.layout = weights, layout
@@ -39,9 +40,9 @@ class IonosphereFreeModel:
         self.positions, self.ambiguities, self.residuals = [], [], []
 
     def min_satellites(self, frame):
-        # One more unknown (Galileo clock) when both systems are tracked.
-        both = (frame.sat > 100).any() and (frame.sat <= 100).any()
-        return (5 if self.layout.tropo is not None else 4)+int(both)
+        # One more unknown (receiver clock) for every additional system.
+        systems = len(set(gnss.systems_of(frame.sat.to_numpy(int))))
+        return (5 if self.layout.tropo is not None else 4)+max(systems-1, 0)
 
     def reset_arc(self, engine, sat, epoch, frame):
         row = frame[frame.sat == sat].iloc[0]
@@ -62,7 +63,7 @@ class IonosphereFreeModel:
         base_noise = np.r_[(factor*code_sigma)**2, (factor*phase_sigma)**2]
         measured = np.r_[frame.Pc.to_numpy(), frame.Lc.to_numpy()]
         amb = np.array([layout.amb(s) for s in ids], int)
-        clock_column = np.where(ids > 100, layout.clock_of['E'][0], layout.clock_of['G'][0])
+        clock_column = np.array([layout.clock_of[s][0] for s in gnss.systems_of(ids)], int)
         groups = np.r_[np.arange(n), np.arange(n)]
         tropo = layout.tropo
         dim = layout.dim
@@ -83,7 +84,7 @@ class IonosphereFreeModel:
 
         self.delays = delays
         # Variance classes (adaptive EKF): code / phase per system.
-        system = (ids > 100).astype(int)*2
+        system = np.array([{'G': 0, 'E': 2, 'C': 4}[s] for s in gnss.systems_of(ids)], int)
         return model, n, np.r_[system, system+1]
 
     def selection_terms(self, engine, frame):
@@ -113,7 +114,10 @@ class IonosphereFreeModel:
                                    sigma_x=sigma[0], sigma_y=sigma[1], sigma_z=sigma[2], satellites=n,
                                    code_rms_m=code_rms, phase_rms_m=phase_rms, nis=report.nis, alpha=report.alpha,
                                    downweighted=report.downweighted, status='float',
-                                   gps_satellites=int((ids <= 100).sum()), galileo_satellites=int((ids > 100).sum()),
+                                   gps_satellites=int((ids <= 100).sum()), galileo_satellites=int(((ids > 100) & (ids <= 200)).sum()),
+                                   bds_satellites=int((ids > 200).sum()),
+                                   **(dict(report.test.as_dict(), qc_excluded_sats=','.join(str(ids[g]) for g in report.test.excluded))
+                                      if report.test is not None else {}),
                                    **{f'variance_factor_{k}': v for k, v in report.factors.items()}))
         self.ambiguities.extend(dict(epok=epoch, sat=int(s), N3=kf.x[layout.amb(s)], sigma_N3=float(np.sqrt(kf.P[layout.amb(s), layout.amb(s)])),
                                      arc=self.arc_id.get(int(s), 0), elevation=float(e)) for s, e in zip(ids, frame.elevation))
@@ -130,7 +134,8 @@ def solve(observations, satellites, approximate_xyz, config, variance_model=None
     options = FilterOptions.from_config(config)
     if not options.is_ekf:
         options.estimator = 'ekf'
-    layout = Layout(clocks=1, troposphere=options.estimate_troposphere, per_satellite=1)
+    layout = Layout(clocks=1, troposphere=options.estimate_troposphere, per_satellite=1,
+                    systems=tuple(getattr(config, 'systems', ('G', 'E'))))
     weights = variance_model or ElevationModel(options.code_sigma, options.phase_sigma)
     engine = FilterEngine(observations, satellites, approximate_xyz, config, layout, atmosphere, options)
     from gps_processing.processing.selection import SatelliteSelector, SelectionOptions

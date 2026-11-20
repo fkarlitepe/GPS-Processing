@@ -312,7 +312,13 @@ class Application(tk.Tk):
                                                    hint='Niell (1996): latitude, height, day of year · Chao (1972): elevation only'))
         self.windup = self.row(rows, LabeledValue(ekf, 'Phase wind-up', 'bool', True, hint='nominal-yaw wind-up on the IF phase; required by OSB/FCB AR products'))
         self.tides = self.row(rows, LabeledValue(ekf, 'Solid Earth tide', 'bool', True, hint='IERS 2010 degree-2 displacement (up to ~30 cm radial)'))
-        self.robust = self.row(rows, LabeledValue(ekf, 'Robust update (IGG-III)', 'bool', True, hint='down-weights outlying observations'))
+        self.robust = self.row(rows, LabeledValue(ekf, 'Robust update', 'bool', True, hint='down-weights outlying observations'))
+        self.robust_method = self.row(rows, LabeledValue(ekf, 'Robust weight function', 'choice', 'igg3', ['igg3', 'huber', 'danish'],
+                                                         hint='IGG-III (Yang 1994) · Huber (1964), k = 1.5 · Danish (Krarup et al. 1980), c = 2'))
+        self.outlier_test = self.row(rows, LabeledValue(ekf, 'Outlier test', 'choice', 'none', ['none', 'global', 'baarda', 'pope'],
+                                                        hint='global: chi-square model test (flag) · baarda: data snooping, B-method · pope: tau test'))
+        self.test_alpha = self.row(rows, LabeledValue(ekf, 'Local test level α0', 'float', 0.001, step=0.001, hint='Baarda w-test (two-sided)'))
+        self.global_alpha = self.row(rows, LabeledValue(ekf, 'Global test level α', 'float', 0.01, step=0.01, hint='chi-square test (global, Pope)'))
         self.code_sigma = self.row(rows, LabeledValue(ekf, 'Raw code σ (zenith)', 'float', 0.3, step=0.1, hint='m'))
         self.phase_sigma = self.row(rows, LabeledValue(ekf, 'Raw phase σ (zenith)', 'float', 0.003, step=0.001, hint='m'))
         self.sequential_info = self.row(rows, ttk.Label(ekf, text='Sequential LS reproduces the v2.0 result unchanged: no process noise, troposphere estimation, '
@@ -580,7 +586,8 @@ class Application(tk.Tk):
         if not ar:
             hidden |= {self.ar_field, self.ar_hint, self.ar_section, self.fcb_section}     # FCBs only matter for PPP-AR
         if not ekf:
-            hidden |= {self.dynamics, self.estimate_troposphere, self.physical, self.mapping, self.windup, self.tides, self.robust, self.ml_section}
+            hidden |= {self.dynamics, self.estimate_troposphere, self.physical, self.mapping, self.windup, self.tides, self.robust, self.robust_method,
+                       self.outlier_test, self.test_alpha, self.global_alpha, self.ml_section}
             if not ar:
                 # v2.0 LS uses its own fixed weights and no atmosphere models.
                 hidden |= {self.code_sigma, self.phase_sigma, self.atmosphere_section}
@@ -688,6 +695,8 @@ class Application(tk.Tk):
             estimator=ESTIMATORS[self.estimator.get()], dynamics=self.dynamics.get(), position_noise=self.position_noise.get(),
             estimate_troposphere=self.estimate_troposphere.get(), troposphere_noise=self.troposphere_noise.get(),
             physical_corrections=self.physical.get(), robust=self.robust.get(), code_sigma=self.code_sigma.get(),
+            robust_method=self.robust_method.get(), outlier_test=self.outlier_test.get(), test_alpha=self.test_alpha.get(),
+            global_alpha=self.global_alpha.get(),
             phase_sigma=self.phase_sigma.get(), integer_method=INTEGER[self.integer_method.get()],
             ar_success_rate=self.success_rate.get(), ar_validation=VALIDATION[self.validation.get()],
             tropo_mapping=self.mapping.get(), repair_clock_jumps=self.clock_jumps.get(), phase_windup=self.windup.get(), solid_tides=self.tides.get(), ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),

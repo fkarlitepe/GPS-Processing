@@ -95,6 +95,14 @@ class ProcessingConfig:
     tropo_mapping: str = 'niell'      # Niell (1996) or Chao (1972); Saastamoinen ZHD + estimated ZWD
     physical_corrections: bool = True
     robust: bool = True
+    robust_method: str = 'igg3'       # weight function of the robust update: igg3 / huber / danish
+    huber_k: float = 1.5
+    danish_c: float = 2.0
+    outlier_test: str = 'none'        # none / global (chi-square) / baarda (data snooping, B-method) / pope (tau)
+    test_alpha: float = 0.001         # Baarda local level alpha0 (two-sided)
+    test_power: float = 0.80          # Baarda B-method power 1 - beta0
+    global_alpha: float = 0.01        # level of the global test ('global', 'pope'; Pope splits it over the rows)
+    max_exclusions: int = 3           # satellites excluded per epoch at most
     code_sigma: float = 0.3
     phase_sigma: float = 0.003
     gf_slip_m: float = 0.05
@@ -117,7 +125,7 @@ class ProcessingConfig:
     ml_validator: str = ''
 
     # Satellite selection and DOP / weighted-DOP analysis (float PPP, processing.selection).
-    selection: str = 'all'            # all / top-cn0 / az-sector / random / backward(+ls) / fibo-gnss(+ls) / exhaustive
+    selection: str = 'all'            # all / top-cn0 / az-sector / random / backward(+ls) / forward+ls / fibo-gnss(+ls) / fibo-gnss2 / exhaustive
     selection_count: int = 0          # satellites per epoch kept for the update (0: all)
     selection_weighting: str = 'filter'   # none (DOP) / elevation / cn0 / filter (weighted DOP, WDOP)
     selection_objective: str = 'pdop'     # pdop / gdop / hdop / vdop
@@ -126,6 +134,9 @@ class ProcessingConfig:
     selection_troposphere: bool = True    # ZWD column in the DOP geometry
     selection_analysis: bool = False  # per-epoch / per-satellite analysis tables also without selection
     selection_seed: int = 0
+    selection_warm_start: bool = False    # FIBO-GNSS: previous subset as an extra candidate
+    selection_state: str = 'keep'     # keep: unselected ambiguities stay in the filter; drop: removed (reset on return)
+    active_states: bool = True        # filter update restricted to the states of the satellites in the filter
 
     reference_xyz: tuple = None
     hold_coordinates: bool = False    # position held at reference_xyz (NL diagnostics, network stations)

@@ -15,9 +15,16 @@ stochastic model, IF factor included: the geometry the EKF actually sees; unit w
 satellite at the zenith, so weighted and classical DOPs share their scale).
 
 Methods: ``all`` (no selection, analysis only), ``top-cn0``, ``az-sector``, ``random``, greedy
-``backward`` elimination, ``fibo-gnss`` (Fibonacci-sphere candidate generation, best of 48 point
-sets; Karlitepe, this project) and their ``+ls`` variants (1-swap local search) and
-``exhaustive`` (full enumeration, small sets only).
+``backward`` elimination, ``forward+ls`` (greedy addition), ``fibo-gnss`` (Fibonacci-sphere candidate
+generation, best of 48 point sets; Karlitepe, this project) and their ``+ls`` variants (1-swap local
+search), ``fibo-gnss2`` (three Fibonacci templates: uniform, zenith-ring and per constellation; no
+quality filter; the three best candidates refined) and ``exhaustive`` (full enumeration, small sets only).
+The 1-swap search of ``backward+ls``, ``forward+ls`` and ``fibo-gnss2`` scores all exchanges from one
+inverse (rank-2 Woodbury update) and keeps every system with at least two satellites.
+
+``state`` (``drop``): the satellites that are not selected leave the filter (their ambiguities are
+removed and re-initialised when they are selected again), so the filter carries only the selected
+satellites; with ``keep`` (default) their ambiguities stay in the filter, unobserved.
 
 The analysis tables written for each epoch and visible satellite are described in
 ``SatelliteSelector.select`` and ``record_update``.
@@ -29,11 +36,13 @@ import numpy as np
 import pandas as pd
 from gps_processing import gnss
 
-METHODS = ('all', 'top-cn0', 'az-sector', 'random', 'backward', 'backward+ls', 'fibo-gnss', 'fibo-gnss+ls', 'exhaustive')
+METHODS = ('all', 'top-cn0', 'az-sector', 'random', 'backward', 'backward+ls', 'forward+ls', 'fibo-gnss', 'fibo-gnss+ls',
+           'fibo-gnss2', 'exhaustive')
+STATES = ('keep', 'drop')
 WEIGHTINGS = ('none', 'elevation', 'cn0', 'filter')
 OBJECTIVES = ('pdop', 'gdop', 'hdop', 'vdop')
 GOLDEN_ANGLE = np.pi*(3.0-np.sqrt(5.0))
-SYSTEM_INDEX = {'G': 0, 'E': 1}
+SYSTEM_INDEX = {'G': 0, 'E': 1, 'C': 2}
 EXHAUSTIVE_LIMIT = 300_000          # subsets; above it 'exhaustive' falls back to fibo-gnss+ls
 
 
@@ -48,6 +57,8 @@ class SelectionOptions:
     troposphere: bool = True        # include the ZWD column in the DOP geometry when ZWD is estimated
     analysis: bool = False          # write the per-epoch / per-satellite analysis tables
     seed: int = 0
+    warm_start: bool = False        # FIBO-GNSS: the previous subset (still-visible members) is an extra candidate
+    state: str = 'keep'             # keep / drop the ambiguities of unselected satellites
 
     @classmethod
     def from_config(cls, config):
@@ -56,7 +67,8 @@ class SelectionOptions:
                    float(getattr(config, 'selection_interval', 0.0)), float(getattr(config, 'selection_hysteresis', 0.0)),
                    bool(getattr(config, 'selection_troposphere', True)),
                    bool(getattr(config, 'selection_analysis', False)) or getattr(config, 'selection', 'all') != 'all',
-                   int(getattr(config, 'selection_seed', 0)))
+                   int(getattr(config, 'selection_seed', 0)), bool(getattr(config, 'selection_warm_start', False)),
+                   getattr(config, 'selection_state', 'keep'))
 
     @property
     def active(self):
@@ -71,6 +83,8 @@ class SelectionOptions:
             raise ValueError(f'Seçim ölçütü {"/".join(OBJECTIVES)} olmalı.')
         if self.method != 'all' and not 6 <= self.count <= 40:
             raise ValueError('Seçilecek uydu sayısı 6 ile 40 arasında olmalı (GPS+Galileo PPP en az 6 bilinmeyen içerir).')
+        if self.state not in STATES:
+            raise ValueError(f'Seçim durumu {"/".join(STATES)} olmalı.')
         if self.interval < 0 or not 0 <= self.hysteresis < 1:
             raise ValueError('Seçim aralığı negatif olamaz; histerezis 0 ile 1 arasında olmalı.')
 
@@ -168,14 +182,17 @@ class Context:
         self.geo, self.objective, self.el, self.az, self.e = geometry, objective, el, az, e
         self.quality, self.k, self.rng, self.n = quality, k, rng, geometry.n
         self.systems = geometry.systems
+        self.seed = None                  # warm start: indices of the previous subset still visible
+        self.evaluations = 0              # number of subsets scored (hardware-independent cost)
 
     def score(self, subsets):
+        self.evaluations += len(subsets)
         return self.geo.score(masks_of(subsets, self.n), self.objective)
 
     def prune(self, sel):
         """A system with one satellite only feeds its own clock: drop it."""
         sel = list(sel)
-        counts = np.bincount(self.systems[sel], minlength=2) if sel else np.zeros(2, int)
+        counts = np.bincount(self.systems[sel], minlength=3) if sel else np.zeros(3, int)
         return [i for i in sel if counts[self.systems[i]] >= 2]
 
     def fill(self, sel):
@@ -209,6 +226,51 @@ class Context:
                 best = v[j]
                 sel.remove(pairs[j][0])
                 sel.append(pairs[j][1])
+            else:
+                break
+        return sel
+
+
+    def fast_swap(self, sel, max_iter=20):
+        """Best-improvement 1-swap search; every exchange is scored from one inverse (Woodbury, rank 2) and
+        keeps each system with at least two satellites. Falls back to ``swap`` for objectives other than PDOP."""
+        if self.objective != 'pdop':
+            return self.swap(sel, max_iter)
+        g, w, systems = self.geo.g, self.geo.w, self.systems
+        sel = sorted(sel)
+        best = self.score([sel])[0]
+        for _ in range(max_iter):
+            S = np.array(sel)
+            mask = np.zeros(self.n, bool)
+            mask[S] = True
+            R = np.flatnonzero(~mask)
+            if not len(R):
+                break
+            N = (g[S]*w[S, None]).T@g[S]
+            absent = np.diag(N) < 1e-12
+            absent[:3] = False
+            N[absent, absent] += 1.0
+            try:
+                Q = np.linalg.inv(N)
+            except np.linalg.LinAlgError:
+                return self.swap(sel, max_iter)
+            VS, VR = g[S]@Q, g[R]@Q
+            qab = VS@g[R].T
+            M11 = (-1.0/w[S]+np.einsum('ij,ij->i', VS, g[S]))[:, None]
+            M22 = (1.0/w[R]+np.einsum('ij,ij->i', VR, g[R]))[None, :]
+            det = M11*M22-qab**2
+            with np.errstate(divide='ignore', invalid='ignore'):
+                tr = (Q[0, 0]+Q[1, 1]+Q[2, 2]-(M22*np.einsum('ij,ij->i', VS[:, :3], VS[:, :3])[:, None]
+                      - 2*qab*(VS[:, :3]@VR[:, :3].T)+M11*np.einsum('ij,ij->i', VR[:, :3], VR[:, :3])[None, :])/det)
+            counts = np.bincount(systems[S], minlength=3)
+            sa, sb = systems[S][:, None], systems[R][None, :]
+            feasible = (sa == sb) | ((counts[sa] >= 3) & (counts[sb] >= 2))
+            self.evaluations += int(feasible.sum())
+            v = np.where(feasible & (np.abs(det) > 1e-12) & (tr > 0), np.sqrt(np.abs(tr)), np.inf)
+            i, j = np.unravel_index(int(np.argmin(v)), v.shape)
+            if v[i, j] < best-1e-9:
+                best = v[i, j]
+                sel = sorted([x for x in sel if x != S[i]]+[int(R[j])])
             else:
                 break
         return sel
@@ -290,8 +352,126 @@ def select_fibo_gnss(c, rotations=12, lam=0.15, mask=np.radians(10.0)):
                     if len(sel) == c.k:
                         break
                 candidates.add(tuple(sorted(sel)))
+    if c.seed:
+        candidates.add(tuple(sorted(c.seed)))
     fixed = list({tuple(sorted(c.fill(c.prune(s)))) for s in candidates})
     return list(fixed[int(np.argmin(c.score(fixed)))])
+
+
+def zenith_ring_cap(N, rotation=0.0, mask=np.radians(10.0), sign=1.0, top=np.radians(35.0)):
+    """One direction at the zenith and N-1 golden-angle directions between the mask and ``top`` (the shape of
+    the minimum-DOP geometry: a high satellite and a ring near the horizon)."""
+    m = max(N-1, 1)
+    z0, z1 = np.sin(mask), np.sin(top)
+    z = z0+(z1-z0)*(np.arange(m)+0.5)/m
+    az = (sign*np.arange(m)*GOLDEN_ANGLE+rotation) % (2*np.pi)
+    r = np.sqrt(1-z*z)
+    return np.vstack([[0.0, 0.0, 1.0], np.stack([r*np.sin(az), r*np.cos(az), z], 1)])
+
+
+def warped_cap(N, rotation, mask, gamma, sign=1.0):
+    u = (np.arange(N)+0.5)/N
+    z0 = np.sin(mask)
+    z = z0+(1-z0)*(1-u)**gamma
+    az = (sign*np.arange(N)*GOLDEN_ANGLE+rotation) % (2*np.pi)
+    r = np.sqrt(1-z*z)
+    return np.stack([r*np.sin(az), r*np.cos(az), z], 1)
+
+
+def _match(e, lw, refs, k, pool):
+    """Greedy matching in increasing cost (angle - lam ln w): the cheapest satellite-direction pair is taken,
+    its row and column removed, until k satellites (iterated argmin; same result as scanning the sorted costs)."""
+    cost = np.arccos(np.clip(e[pool]@refs.T, -1, 1))-lw[:, None]
+    sel = []
+    for _ in range(min(k, *cost.shape)):
+        si, ri = np.unravel_index(int(np.argmin(cost)), cost.shape)
+        sel.append(int(pool[si]))
+        cost[si, :] = np.inf
+        cost[:, ri] = np.inf
+    return sel
+
+
+def _match_batch(e, lw, refs, k):
+    """``_match`` for a stack of reference sets (sets, N, 3) at once: (sets, k) satellite indices."""
+    cost = np.arccos(np.clip(np.einsum('nd,sjd->snj', e, refs), -1, 1))-lw[None, :, None]
+    sets, n, N = cost.shape
+    out = np.empty((sets, min(k, n, N)), int)
+    rows = np.arange(sets)
+    for step in range(out.shape[1]):
+        flat = np.argmin(cost.reshape(sets, -1), axis=1)
+        si, ri = np.divmod(flat, N)
+        out[:, step] = si
+        cost[rows, si, :] = np.inf
+        cost[rows, :, ri] = np.inf
+    return out
+
+
+_TEMPLATES = {}
+
+
+def _template(kind, N, rotation, mask, sign, gamma=1.0):
+    key = (kind, N, round(rotation, 9), round(mask, 9), sign, gamma)
+    if key not in _TEMPLATES:
+        _TEMPLATES[key] = (fibonacci_cap(N, rotation, mask, sign) if kind == 'uniform' else
+                           zenith_ring_cap(N, rotation, mask, sign) if kind == 'zenith-ring' else
+                           warped_cap(N, rotation, mask, gamma, sign))
+    return _TEMPLATES[key]
+
+
+def select_fibo_gnss2(c, rotations=12, lam=0.10, mask=np.radians(10.0), top=3):
+    """FIBO-GNSS2: candidates from three Fibonacci templates (uniform; zenith + low ring; per system, so each
+    receiver clock gets its own spread), no quality filter, the ``top`` best candidates refined by the fast swap."""
+    lw = lam*np.log(np.maximum(c.quality, 1e-12)/max(c.quality.max(), 1e-12))
+    everyone = np.arange(c.n)
+    raw = set()
+    for N in (c.k, c.k+1):
+        key = ('stack', N, rotations, round(mask, 9))
+        if key not in _TEMPLATES:
+            _TEMPLATES[key] = np.stack([_template(kind, N, 2*np.pi*r/rotations, mask, sign)
+                                        for kind in ('uniform', 'zenith-ring') for sign in (1.0, -1.0)
+                                        for r in range(rotations)])
+        raw |= {tuple(sorted(row)) for row in _match_batch(c.e, lw, _TEMPLATES[key], c.k).tolist()}
+    systems, counts = np.unique(c.systems, return_counts=True)
+    use = [s for s, n in sorted(zip(systems, counts), key=lambda x: -x[1]) if n >= 2][:max(1, c.k//3)]
+    if use:
+        alloc = {s: 2 for s in use}
+        total = sum(counts[list(systems).index(s)] for s in use)
+        for _ in range(c.k-2*len(use)):
+            s = max(use, key=lambda s: counts[list(systems).index(s)]/total*c.k-alloc[s])
+            alloc[s] += 1
+        for gamma in (1.0, 2.0):
+            for sign in (1.0, -1.0):
+                for r in range(rotations//2):
+                    sel = []
+                    for j, s in enumerate(use):
+                        idx = np.flatnonzero(c.systems == s)
+                        m = min(alloc[s], len(idx))
+                        refs = _template('warped', m, 2*np.pi*r/(rotations//2)+j*GOLDEN_ANGLE, mask, sign, gamma)
+                        sel += _match(c.e, lw[idx], refs, m, idx)
+                    raw.add(tuple(sorted(sel)))
+    if c.seed:
+        raw.add(tuple(sorted(c.seed)))
+    cands = list({tuple(sorted(c.fill(c.prune(s)))) for s in raw})
+    v = c.score(cands)
+    best, value = None, np.inf
+    for j in np.argsort(v)[:top]:
+        if not np.isfinite(v[j]):
+            continue
+        s = c.fast_swap(list(cands[j]))
+        sv = c.score([s])[0]
+        if sv < value:
+            best, value = s, sv
+    return best if best is not None else list(cands[int(np.argmin(v))])
+
+
+def select_forward(c):
+    """Greedy addition from the two highest satellites of the two largest systems."""
+    systems, counts = np.unique(c.systems, return_counts=True)
+    core = []
+    for s in systems[np.argsort(-counts)][:2]:
+        idx = np.flatnonzero(c.systems == s)
+        core += list(idx[np.argsort(-c.el[idx])][:2])
+    return c.fill(core)
 
 
 def select_exhaustive(c):
@@ -315,8 +495,10 @@ def select_exhaustive(c):
 
 ALGORITHMS = {
     'top-cn0': select_top_cn0, 'random': select_random, 'az-sector': select_az_sector,
-    'backward': select_backward, 'backward+ls': lambda c: c.swap(select_backward(c)),
+    'backward': select_backward, 'backward+ls': lambda c: c.fast_swap(select_backward(c)),
+    'forward+ls': lambda c: c.fast_swap(select_forward(c)),
     'fibo-gnss': select_fibo_gnss, 'fibo-gnss+ls': lambda c: c.swap(select_fibo_gnss(c)),
+    'fibo-gnss2': select_fibo_gnss2,
     'exhaustive': select_exhaustive,
 }
 
@@ -391,6 +573,7 @@ class SatelliteSelector:
         quality = cn0_weight(self.cn0(frame)) if opt.weighting in ('none', 'elevation') else w
         k = min(opt.count, n) if opt.active else n
         reselected = False
+        self.last_evaluations = 0
         if not opt.active or k >= n:
             sel = list(range(n))
         else:
@@ -402,7 +585,10 @@ class SatelliteSelector:
                     keep = old
             if keep is None:
                 c = Context(geo, opt.objective, el, az, e, quality, k, self.rng)
+                if opt.warm_start and self.previous is not None:
+                    c.seed = [idx[s] for s in self.previous if s in idx]
                 keep = ALGORITHMS[opt.method](c)
+                self.last_evaluations = c.evaluations
                 if old is not None and opt.hysteresis > 0 and sorted(old) != sorted(keep):
                     # Phase ambiguities converge only while a satellite is used: keep the current subset
                     # unless the new one is clearly better.
@@ -430,7 +616,12 @@ class SatelliteSelector:
                    selected_galileo=int((systems[sel] == 1).sum()), method=self.options.method,
                    weighting=self.options.weighting, objective=self.options.objective,
                    objective_all=float(objective[0]), objective_selected=float(objective[1]),
-                   reselected=reselected, selection_ms=elapsed)
+                   reselected=reselected, selection_ms=elapsed, evaluations=getattr(self, 'last_evaluations', 0),
+                   mean_elevation_selected=float(np.degrees(el[sel]).mean()) if len(sel) else np.nan,
+                   mean_elevation_all=float(np.degrees(el).mean()),
+                   low_selected=float(np.mean(el[sel] < np.radians(30))) if len(sel) else np.nan,
+                   low_all=float(np.mean(el < np.radians(30))),
+                   visible_bds=int((systems == 2).sum()), selected_bds=int((systems[sel] == 2).sum()))
         for name in OBJECTIVES:
             row[f'{name}_all'], row[f'{name}_selected'] = float(plain[name][0]), float(plain[name][1])
             row[f'w{name}_all'], row[f'w{name}_selected'] = float(weighted[name][0]), float(weighted[name][1])

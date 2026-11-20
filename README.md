@@ -22,6 +22,16 @@ python3 experiments/analyse_selection.py
 
 Set `OMP_NUM_THREADS=1` when running the grids in parallel. Results are written to `results/experiments/`.
 
+**v3.2 (kalite kontrolü):** EKF güncellemesine istatistiksel testler ve seçilebilir robust kestirim eklendi:
+- global χ² model testi (`--outlier-test global`);
+- Baarda veri yoklaması, B-yöntemi (`baarda`);
+- Pope τ testi (`pope`);
+- Huber ve Danish ağırlık fonksiyonları (`--robust-method huber|danish`, IGG-III varsayılan).
+
+Tanımlanan uydular tek tek dışlanır ve test istatistikleri konum tablosuna yazılır. Aynı testler genel en küçük kareler dengelemesi için `processing.estimation.quality.least_squares` ile de kullanılabilir. Ayrıntılar [EKF ve ML belgesinde](docs/EKF_ML.md); deney için `python3 -m experiments.run_quality` kullanılır.
+
+**v3.1 (uydu seçimi, ikinci revizyon):** BeiDou (B1I/B3I, GEO hariç) desteği: `--systems G E C` ile üç sistemli PPP (sistem başına alıcı saati, ANTEX C02/C06, Bias-SINEX C2I/C6I). Yeni seçim yöntemleri `fibo-gnss2` (üç Fibonacci şablonu: düzgün, zenit + alçak halka, sistem başına; kalite süzgeci yok; en iyi üç aday iyileştirilir) ve `forward+ls`; 1-değişim araması tüm değişimleri tek ters matristen (Woodbury, rank 2) puanlar ve her sistemde en az iki uydu bırakır. `--selection-state drop`: seçilmeyen uydular filtreden çıkar, yeniden seçildiklerinde yeni yay başlar. Float PPP güncellemesi yalnız filtredeki uyduların durumları üzerinde yapılır (`active_states`, sonuç tam güncellemeyle aynı). Deney: `python3 -m experiments.run_selection_rev2 run GE|GEC`, `... timing`, analiz `experiments/analyse_selection_rev2.py`.
+
 **v3.0 (uydu seçimi ve DOP / ağırlıklı DOP analizi):** Float PPP'de her epokta yalnız k uydu güncellemeye girer (`--selection fibo-gnss+ls --selection-count 8`). Seçim, PPP geometrisinin (E, N, U, sistem başına alıcı saati, ZWD) klasik DOP'unu veya ağırlıklı DOP'unu (WDOP, `--selection-weighting none|elevation|cn0|filter`) en küçükler. Yöntemler: FIBO-GNSS (Fibonacci küresi adayları) ve yerel arama, geri eleme, en yüksek C/N0, azimut dilimleri, rastgele, tam tarama. Faz yaylarını korumak için histerezis ve tutma süresi seçenekleri var. Analiz bölümü: görünen/kullanılan uydular, epok başına DOP/WDOP, her uydunun DOP değeri, model terimleri, artıklar ve Kalman düzeltmesindeki payı (`selection_report.md`, `selection_*.csv`, SVG grafikler; arayüzde *Results → Satellite selection / DOP*). Ayrıntılar ve deney: [uydu seçimi belgesi](docs/SELECTION.md).
 
 **v2.1:** Kestirim noktalarına iterasyonlu **genişletilmiş Kalman filtresi** (statik/kinematik, ZWD kestirimi, IGG-III robust ve adaptif güncelleme), **LAMBDA + kısmi AR** ve iki **makine öğrenmesi** bileşeni (artıklardan öğrenilen gözlem varyansı, Monte Carlo ile eğitilmiş AR doğrulayıcı) eklendi; arayüze yöntem ayarları, grafikler ve **yöntem karşılaştırması** sekmesi geldi. Denklemler, örnek sonuçlar ve deney tasarımı: [EKF ve ML belgesi](docs/EKF_ML.md).
@@ -121,7 +131,7 @@ python -m gps_processing --sp3-before Data/…260….SP3 --sp3-day Data/…270�
   --compare 'Sequential LS (v2.0)' 'EKF' 'Adaptive + robust EKF' 'EKF + ML weighting' --output results
 ```
 
-Seçenekler: `--estimator sequential|ekf|adaptive-ekf`, `--dynamics static|kinematic`, `--no-troposphere`, `--no-physical-corrections`, `--no-robust`, `--integer-method ils|lambda|bootstrap|cascade`, `--ar-success-rate`, `--ar-validation ffrt|ratio|ml|ffrt+ml|ratio+ml`, `--ar-failure-rate`, `--ar-min-ambiguities`, `--ar-max-exclusions`, `--ar-min-elevation`, `--ar-min-arc`, `--ar-hold`, `--ar-fixability`, `--ml-weighting`, `--ml-validator`. Yer modelleri: `--ocean-loading BLQ`, `--erp ERP`, `--attitude ATT.OBX`, `--no-shapiro`, `--no-satellite-pcv`. Teşhis: `--diagnose-nl`. `sequential` v2.0 sonucunu değiştirmeden üretir.
+Seçenekler: `--estimator sequential|ekf|adaptive-ekf`, `--dynamics static|kinematic`, `--no-troposphere`, `--no-physical-corrections`, `--no-robust`, `--robust-method igg3|huber|danish`, `--outlier-test none|global|baarda|pope`, `--test-alpha`, `--test-power`, `--global-alpha`, `--max-exclusions`, `--integer-method ils|lambda|bootstrap|cascade`, `--ar-success-rate`, `--ar-validation ffrt|ratio|ml|ffrt+ml|ratio+ml`, `--ar-failure-rate`, `--ar-min-ambiguities`, `--ar-max-exclusions`, `--ar-min-elevation`, `--ar-min-arc`, `--ar-hold`, `--ar-fixability`, `--ml-weighting`, `--ml-validator`. Yer modelleri: `--ocean-loading BLQ`, `--erp ERP`, `--attitude ATT.OBX`, `--no-shapiro`, `--no-satellite-pcv`. Teşhis: `--diagnose-nl`. `sequential` v2.0 sonucunu değiştirmeden üretir.
 
 Ayar dosyası: `--write-config run.json` bütün ayarları JSON'a yazar; `--config run.json` (JSON; Python 3.11+/tomli ile TOML; PyYAML ile YAML) okur, komut satırındaki seçenekler dosyayı ezer. Arayüz aynı `ProcessingConfig` alanlarını kullanır.
 

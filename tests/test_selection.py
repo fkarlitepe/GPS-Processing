@@ -65,6 +65,23 @@ class AlgorithmTest(unittest.TestCase):
                 self.assertGreaterEqual(b, best-1e-12)
 
 
+class WarmStartTest(unittest.TestCase):
+    def test_seed_is_a_candidate_and_evaluations_are_counted(self):
+        e, el, az, systems = sky(16, seed=5)
+        w = np.sin(el)**2
+        geo = S.Geometry(e, systems, w)
+        best, value = None, np.inf
+        for s in combinations(range(16), 6):
+            v = geo.score(S.masks_of([s], 16), 'pdop')[0]
+            if v < value:
+                best, value = list(s), v
+        c = S.Context(geo, 'pdop', el, az, e, w, 6, np.random.default_rng(0))
+        c.seed = best
+        sel = S.select_fibo_gnss(c)
+        self.assertAlmostEqual(c.score([sel])[0], value)
+        self.assertGreater(c.evaluations, 0)
+
+
 class SelectorTest(unittest.TestCase):
     def frame(self, n=14, seed=3):
         e, el, az, systems = sky(n, seed)
@@ -104,6 +121,75 @@ class SelectorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             S.SelectionOptions('nearest', 8).validate()
         S.SelectionOptions('all', 0).validate()
+
+
+class RevisionTwoTest(unittest.TestCase):
+    """FIBO-GNSS2, the Woodbury exchange scores, BDS identifiers and the restricted (active-state) update."""
+
+    def context(self, n=18, k=8, systems=3, seed=4):
+        rng = np.random.default_rng(seed)
+        el = np.arcsin(rng.uniform(np.sin(np.radians(10)), 1, n))
+        az = rng.uniform(0, 2*np.pi, n)
+        e = np.stack([np.cos(el)*np.sin(az), np.cos(el)*np.cos(az), np.sin(el)], 1)
+        sy = np.arange(n) % systems
+        w = rng.uniform(0.2, 2.0, n)
+        return S.Context(S.Geometry(e, sy, w, S.wet_mapping(el)), 'pdop', el, az, e, w, k, rng)
+
+    def test_fast_swap_scores_equal_direct_evaluation(self):
+        c = self.context()
+        start = S.select_backward(c)
+        result = c.fast_swap(list(start))
+        self.assertLessEqual(c.score([result])[0], c.score([start])[0]+1e-12)
+        # no single feasible exchange improves the result (local optimum of the same neighbourhood)
+        counts = np.bincount(c.systems[result], minlength=3)
+        best = c.score([result])[0]
+        for a in result:
+            for b in set(range(c.n))-set(result):
+                sa, sb = c.systems[a], c.systems[b]
+                if sa == sb or (counts[sa] >= 3 and counts[sb] >= 2):
+                    self.assertGreaterEqual(c.score([[x for x in result if x != a]+[b]])[0], best-1e-9)
+
+    def test_fibo_gnss2_is_feasible_and_not_worse_than_its_candidates(self):
+        for seed in range(5):
+            c = self.context(seed=seed)
+            sel = S.select_fibo_gnss2(c)
+            self.assertEqual(len(set(sel)), c.k)
+            counts = np.bincount(c.systems[sel], minlength=3)
+            self.assertTrue(all(v == 0 or v >= 2 for v in counts))
+            self.assertLessEqual(c.score([sel])[0], c.score([S.select_fibo_gnss(c)])[0]+1e-9)
+
+    def test_bds_identifiers(self):
+        from gps_processing import gnss
+        sat = gnss.parse('C19')
+        self.assertEqual((sat, gnss.system_of(sat), gnss.label(sat), gnss.slot(sat)), (219, 'C', 'C19', 86))
+        self.assertEqual(gnss.slots_for(('G', 'E')), 68)
+        f1, f2 = gnss.frequencies([219])
+        self.assertAlmostEqual(f1[0], 1561.098e6)
+        self.assertAlmostEqual(f2[0], 1268.52e6)
+
+    def test_restricted_update_equals_full_update(self):
+        from gps_processing.processing.estimation import ExtendedKalmanFilter
+        rng = np.random.default_rng(2)
+        dim, active = 9, np.array([0, 1, 2, 4, 6])
+        P = np.eye(dim)*4.0
+        A = rng.normal(size=(5, 5))
+        P[np.ix_(active, active)] = A@A.T+np.eye(5)
+        H = np.zeros((6, dim))
+        H[:, active] = rng.normal(size=(6, 5))
+        y = rng.normal(size=6)
+        model = lambda x, inflation: (y, H@x, H, np.eye(6)*0.5, np.arange(6))
+        full = ExtendedKalmanFilter(np.zeros(dim), P.copy())
+        part = ExtendedKalmanFilter(np.zeros(dim), P.copy())
+        full.update(model, 6)
+        report = part.update(model, 6, active=active)
+        np.testing.assert_allclose(part.x, full.x, atol=1e-10)
+        np.testing.assert_allclose(part.P, full.P, atol=1e-10)
+        self.assertEqual(report.gain.shape, (dim, 6))
+
+    def test_drop_state_option(self):
+        S.SelectionOptions('fibo-gnss2', 8, 'filter', state='drop').validate()
+        with self.assertRaises(ValueError):
+            S.SelectionOptions('fibo-gnss2', 8, 'filter', state='forget').validate()
 
 
 if __name__ == '__main__':

@@ -20,7 +20,8 @@ RINEX2_NAMES = {'P1': ['c1w'], 'C1': ['c1c'], 'L1': ['l1w', 'l1c'], 'S1': ['s1w'
                 'C5': ['c5x'], 'L5': ['l5x'], 'S5': ['s5x']}
 RINEX2_GALILEO = {'C1': ['c1x'], 'L1': ['l1x'], 'S1': ['s1x'], 'C5': ['c5x'], 'L5': ['l5x'], 'S5': ['s5x']}
 # Preferred tracking attributes per system and band (first available code/phase pair is used).
-TRACKING = {('G', '1'): 'wcxpsl', ('G', '2'): 'wcxlsp', ('E', '1'): 'xcb', ('E', '5'): 'xqi'}
+TRACKING = {('G', '1'): 'wcxpsl', ('G', '2'): 'wcxlsp', ('E', '1'): 'xcb', ('E', '5'): 'xqi',
+            ('C', '2'): 'i', ('C', '6'): 'i'}     # BDS: B1I/B3I (the clock datum of the MGEX products)
 
 
 def read_header(lines):
@@ -129,7 +130,7 @@ def rinex2_rows(lines, end, types):
             payload = ''.join(lines[i+k][:80].ljust(80) for k in range(per_satellite) if i+k < len(lines))
             i += per_satellite
             system = sat[0] if sat[0] != ' ' else 'G'
-            if system not in gnss.SYSTEMS:
+            if system not in ('G', 'E'):
                 continue
             mapping = RINEX2_NAMES if system == 'G' else RINEX2_GALILEO
             row = {'sat': gnss.sat_id(system, int(sat[1:])), 'epok': epoch, 'epoch_reset': flag == 1}
@@ -160,12 +161,16 @@ def read_rinex(path):
     raw = pd.DataFrame(rows)
     if raw.empty:
         raise ValueError('Dosyada GPS/Galileo gözlemi bulunamadı.')
+    raw = raw[~raw.sat.isin(gnss.BDS_GEO)].reset_index(drop=True)      # BDS GEO not used
     raw['system'] = gnss.systems_of(raw.sat.to_numpy())
+    systems = raw.system.to_numpy()
     for name in raw.columns:
-        if name.startswith('l'):
-            frequency = {'1': F1, '2': F2, '5': F5}.get(name[1])
-            if frequency:
-                raw[name] *= C/frequency
+        if name.startswith('l') and len(name) == 3:
+            for system, info in gnss.SYSTEMS.items():
+                if name[1] in info['bands']:
+                    frequency = info['f1'] if name[1] == info['bands'][0] else info['f2']
+                    rows = systems == system
+                    raw.loc[rows, name] = raw.loc[rows, name]*C/frequency
     # Select matching code/phase tracking signals per row and system (GPS: W first; Galileo: X first).
     def pair(system, band):
         rows = raw.system.eq(system).to_numpy()
@@ -187,8 +192,11 @@ def read_rinex(path):
             parts[system, k] = pair(system, band)
     merged = {}
     for k in (0, 1):
-        series = [parts[s, k] for s in gnss.SYSTEMS]
-        merged[k] = tuple(series[0][i].where(raw.system.eq('G'), series[1][i]) for i in range(4))
+        merged[k] = tuple(parts['G', k][i] for i in range(4))
+        for system in gnss.SYSTEMS:
+            if system != 'G':
+                rows = raw.system.eq(system)
+                merged[k] = tuple(merged[k][i].where(~rows, parts[system, k][i]) for i in range(4))
     (p1, l1, signal1, snr1), (p2, l2, signal2, snr2) = merged[0], merged[1]
     f1, f2 = gnss.frequencies(raw.sat.to_numpy())
     combined = raw[['sat', 'epok', 'epoch_reset']].copy()
@@ -203,7 +211,7 @@ def read_rinex(path):
     # C/N0 of the open-service L1/E1 signal (GPS S1C, Galileo S1C/S1X): comparable between systems,
     # unlike the semi-codeless S1W of some receivers; used by the satellite selection (C/N0 weights).
     cn0 = pd.Series(np.nan, index=raw.index)
-    for system, names in (('G', ('s1c', 's1l', 's1x')), ('E', ('s1c', 's1x'))):
+    for system, names in (('G', ('s1c', 's1l', 's1x')), ('E', ('s1c', 's1x')), ('C', ('s2i',))):
         for name in names:
             if name in raw:
                 rows = raw.system.eq(system) & cn0.isna() & raw[name].gt(0)

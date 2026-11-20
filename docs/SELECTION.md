@@ -117,3 +117,17 @@ Ağırlıklar arasında belirgin fark yoktur. C/N0 ve sin²el en az filtre ağı
 **Histerezis.** k = 8, FIBO-GNSS+LS ve filtre ağırlığıyla %5 histerezis yeniden seçimleri yarıya indirir (20'ye karşı 43). Ama yakınsama 0,5 dk daha uzundur (p = 0,005) ve 3B RMS'te anlamlı fark yoktur. Bu nedenle %5'lik eşik yararlı değildir; yayları korumak için daha uzun bir `--selection-interval` denenmelidir.
 
 **Sonuç.** Float PPP'de uydu seçimi yalnız işlem yükü veya bant genişliği sınırı varsa anlamlıdır. Seçim yapılacaksa ağırlıklı DOP (WDOP) kullanılmalıdır: k ≤ 8'de 3B hatayı %10–20 düşürür. k ≥ 10'da ağırlıklandırmanın önemi kalmaz.
+
+## v3.1: ikinci revizyon
+
+* **BeiDou.** `gnss.SYSTEMS['C']`: B1I/B3I, kimlikler 201–263. GEO uydular (C01–C05, C59–C63) RINEX okunurken çıkarılır. Filtreye Galileo saatinden sonra bir BeiDou alıcı saati eklenir (`Layout(..., systems)`). Uydu PCO/PCV değerleri ANTEX C02/C06 kayıtlarından gelir; alıcı anteninde C02/C06 yoksa GPS değerleri kullanılır. Bias-SINEX hedefi C2I/C6I'dır.
+* **`fibo-gnss2`.** Adaylar üç Fibonacci şablonundan üretilir:
+  1. eşit alanlı spiral;
+  2. zenit yönü artı maske ile 35° arasında altın açılı bir halka (en küçük DOP geometrisinin biçimi);
+  3. her sistem için ayrı bir spiral (yerler görünür uydu sayısıyla orantılı, her sisteme en az iki).
+
+  Kalite süzgeci yoktur. En iyi üç aday 1-değişim aramasıyla iyileştirilir ve en iyisi döner. `selection_warm_start` açıksa önceki alt küme ek bir aday olur.
+* **Hızlı 1-değişim araması** (`Context.fast_swap`; `backward+ls`, `forward+ls` ve `fibo-gnss2` kullanır). S alt kümesi için Q = (G_Sᵀ W G_S)⁻¹ olsun. a uydusunu b ile değiştirmek normal matrise U C Uᵀ ekler (U = [g_a g_b], C = diag(−w_a, w_b)). Woodbury özdeşliğine göre iz_konum(Q′) = iz_konum(Q) − iz_konum(Q U M⁻¹ Uᵀ Q) olur; burada M = C⁻¹ + Uᵀ Q U (2 × 2). Böylece k(n−k) değişimin tamamı tek bir ters matristen hesaplanır. Bir sistemi tek uyduya düşüren değişimlere izin verilmez.
+* **`selection_state='drop'`.** Alt küme kayma tespitinden önce seçilir ve filtreye yalnız seçilen uydular girer. Yeniden seçilen bir uydu yeni bir yay başlatır.
+* **Kısıtlı güncelleme** (`active_states`, float PPP). EKF güncellemesi yalnız konum, saatler, ZWD ve filtredeki uyduların belirsizlikleri üzerinde çalışır. Filtreden çıkan durumların bağıntıları sıfırlanır. Sonuç tam güncellemeyle aynıdır (birim testi `RevisionTwoTest.test_restricted_update_equals_full_update`).
+* **Deney.** `experiments/run_selection_rev2.py`: üç gün, GE ve GEC, kontroller, eşik ve tutma süresi duyarlılığı, kinematik PPP, çalışma süresi. Analiz: `experiments/analyse_selection_rev2.py` (istasyon düzeyi testler, istasyon bootstrap, Holm, Kaplan–Meier).

@@ -10,6 +10,7 @@ Data/network/
 Data/obs/
 Data/products/
 Data/sinex/
+Data/sinex_*/
 Data/network_global5/
 manuscript/build/
 *.docx

@@ -15,7 +15,7 @@ from gps_processing.constants import C
 from gps_processing import gnss
 from gps_processing.io.ionex import read_text
 
-TARGET = {'G': {'1': 'C1W', '2': 'C2W'}, 'E': {'1': 'C1C', '5': 'C5Q'}}
+TARGET = {'G': {'1': 'C1W', '2': 'C2W'}, 'E': {'1': 'C1C', '5': 'C5Q'}, 'C': {'2': 'C2I', '6': 'C6I'}}
 
 
 @dataclass

@@ -9,7 +9,7 @@ Bu belge v2.1'de eklenen kestirim katmanını açıklar: iterasyonlu genişletil
 | Konum/saat/belirsizlik durumu | Süreç gürültüsüz sıralı ağırlıklı LS | İterasyonlu EKF: süreç gürültüsü, statik/kinematik, Joseph formu | `processing/estimation/ekf.py`, `ppp_ekf.py`, `ar/solver.py` |
 | Troposfer | Yok | Saastamoinen ZHD + Niell (veya Chao) eşleme, kalan ZWD rastgele yürüyüş durumu | `processing/troposphere.py` |
 | Uydu saati | SP3 | SP3 + periyodik relativistik terim −2 r·v / c | `processing/orbit.py` |
-| Aykırı gözlem | Yok | IGG-III eşdeğer ağırlık (sonsal standart artık) | `ekf.py: igg3` |
+| Aykırı gözlem | Yok | IGG-III / Huber / Danish eşdeğer ağırlık (sonsal standart artık); global χ², Baarda, Pope testleri (DIA) | `estimation/quality.py` |
 | Model uyumsuzluğu | Yok | İnovasyon tabanlı adaptif fading (yalnız konum) | `ekf.py: update(adaptive=…)` |
 | Kayma tespiti | LLI, boşluk, MW | + Geometry-free faz sıçraması | `processing/cycle_slip.py` |
 | Gözlem varyansı | Sabit σ/sin(e) | **ML:** artıklardan öğrenilen σ(e, SNR, yay) | `processing/ml/stochastic.py` |
@@ -38,6 +38,38 @@ L_IF = ρ + c·dt_r − c·dt^s − δ_rel + ZHD·m_h(e) + ZWD·m_w(e) + A + ε_
 Ölçüm güncellemesi Gauss–Newton iterasyonlu EKF'dir (IEKF): `h(x)` her iterasyonda yeniden doğrusallaştırılır, kazanç öncül kovaryansla hesaplanır, kovaryans Joseph formuyla güncellenir. Çıktıdaki `nis` normalleştirilmiş inovasyon karesidir (gözlem başına, beklenen değer 1): 1'in çok üstü stokastik modelin iyimser olduğunu gösterir.
 
 **Robust (IGG-III):** sonsal artıklar kendi kovaryansları `R − H P⁺ Hᵀ` ile standartlaştırılır; `|v| ≤ 2.5` tam ağırlık, `2.5 < |v| ≤ 6` azaltılmış ağırlık, `> 6` reddedilir. SDBS'de satırlar korele olduğundan ağırlık uydu bloğuna (kod+faz+MW) uygulanır.
+
+**Kalite kontrolü (v3.2, `processing/estimation/quality.py`):** Her ölçü güncellemesi istatistiksel olarak test edilebilir ve robust kestirimin ağırlık fonksiyonu seçilebilir. Varsayılan ayar (`--outlier-test none`, `--robust-method igg3`) önceki sonuçları değiştirmez.
+
+Test büyüklükleri güncellemenin sonsal artıklarından hesaplanır. Doğrusal durumda `v = (I − HK) e = R S⁻¹ e`, `Q_v = R − H P⁺ Hᵀ` ve `W = R⁻¹` olduğundan `W v = S⁻¹ e` ve `W Q_v W = S⁻¹` olur. Böylece öngörü kovaryansı `S` ile ayrıca çözüm yapılmaz; her epokta 10¹⁰ m² ile sıfırlanan alıcı saati `S`'yi kötü koşullu yapar. Serbestlik derecesi, dışlanmamış satır sayısından önsel varyansı ≥ 10⁴ m² olan (difüz) gözlenen durumların sayısı çıkarılarak bulunur (sıfırlanan saatler, yeni belirsizlikler).
+
+| `--outlier-test` | Test | Karar |
+|---|---|---|
+| `global` | `T = eᵀ S⁻¹ e ~ χ²(df)`, düzey `--global-alpha` (0.01) | Yalnız işaretler (`qc_passed`) |
+| `baarda` | Veri yoklama, `w_i = (W v)_i / √(W Q_v W)_ii ~ N(0,1)`. B-yöntemi: α₀ = 0.001, 1−β₀ = 0.80 → λ₀ = 17.07; global düzey aynı λ₀'ı aynı güçle yakalayacak şekilde seçilir | Global test reddederse en büyük \|w\| > 3.29 olan uydu dışlanır, güncelleme yinelenir |
+| `pope` | τ testi: σ̂₀² = T/df, τ_i = w_i/σ̂₀; kritik değer √df·t/√(df−1+t²), t = t_{df−1}(1−α_i/2), α_i = 1−(1−α)^{1/n} | Aynı, tek tek dışlama |
+
+Dışlama uydu bloğuna (kod+faz) uygulanır: varyans 10⁸ ile büyütülür. En çok `--max-exclusions` (3) uydu dışlanır ve modelin en az uydu sayısı korunur. Global test reddettiği halde hiçbir yerel test kritik değeri aşmıyorsa (tanımlanamayan model hatası) epok işaretlenir ama uydu dışlanmaz.
+
+Robust ağırlık fonksiyonları (`--robust-method`) standart sonsal artık `u` üzerinde çalışır ve varyans büyütmesi 1/w uygulanır:
+- **IGG-III** (Yang 1994): k₀ = 2.5, k₁ = 6.
+- **Huber** (1964): `w = 1` (|u| ≤ k), `k/|u|` (|u| > k); k = 1.5 (`--huber-k`).
+- **Danish** (Krarup, Juhl & Kubik 1980), üstel biçim: `w = 1` (|u| ≤ c), `exp(1 − (u/c)²)` (|u| > c); c = 2 (`--danish-c`). |u| = c'de süreklidir, 2c'de ağırlık ≈ 0.05'tir.
+
+Test ile robust güncelleme birlikte kullanılabilir (`--outlier-test baarda --robust-method danish`): önce dışlama, sonra kalan gözlemlerde ağırlıklandırma yapılır. Konum tablosuna şu sütunlar eklenir: `qc_T`, `qc_df`, `qc_critical`, `qc_first_passed`, `qc_passed`, `qc_sigma0`, `qc_local_max`, `qc_local_critical`, `qc_excluded` ve `qc_excluded_sats`. Aynı testler Gauss–Markov dengelemesi için `quality.least_squares(A, l, Qll, QualityOptions(test=...), robust=...)` ile de kullanılabilir.
+
+*Deney (`experiments/run_quality.py`):* 2024-03-21, WTZR, GRAZ, BRUX ve EBRE istasyonları; GE kinematik PPP, 12 adet 2 saatlik oturum. Oturumun ilk saatinden sonra 3B RMS ortalaması gerçek veride 29.6 mm. Kod gözlemlerinin %1'ine ±10–30 m kaba hata eklendiğinde:
+
+| Yöntem | 3B RMS | Kaba hata yakalama | Yanlış alarm |
+|---|---|---|---|
+| Kalite kontrol yok | 30.2 mm | – | – |
+| Baarda | 30.0 mm | %69 | %0 |
+| Pope | 29.9 mm | %43 | %0 |
+| IGG-III | 30.1 mm | %94 | ~%2 |
+| Danish | 30.3 mm | %98 | ~%2 |
+| Huber | 30.0 mm | %37 | ~%2 |
+
+Yakınsamış faz çözümünde kod kaba hataları konumu az etkiler. Yakınsamanın ilk 30 dakikasında ise etki büyüktür (WTZR'de 333 mm, Baarda ile 160 mm). Gerçek veride global test epokların yaklaşık %40'ını reddeder ama yerel test neredeyse hiç uydu tanımlamaz. Bu durum tek tek aykırı gözlemlere değil, stokastik modelin (kod σ = 0.3 m) iyimser olmasına işaret eder. Adaptif EKF (`adaptive-ekf`) sınıf varyans faktörleriyle bunu düzeltir.
 
 **Tek EKF çekirdeği (v2.9, `processing/engine.py`):** Float PPP ve üç PPP-AR kullanıcı modeli aynı döngüyü kullanır. Bu döngü şunları bir kez yapar: durum düzeni, yükseklik maskesi, öngörü, saat ve kayma sıfırlamaları, atmosfer gecikmeleri, uydu saat/relativite terimleri, robust/adaptif güncelleme. Gözlem modelleri eklentidir: `ppp_ekf.IonosphereFreeModel` (IF kod+faz) ve `ar.solver.UserModel` (IF kod, IF faz, MW; SDBS/DCM/IPC dönüşümü; güncellemeden sonra AR). Yeniden düzenleme v2.8 sonuçlarını bit düzeyinde aynen üretir (MADR, 4 saat; PPP, SDBS, DCM, IPC). DCM/IPC başlangıç epoklarındaki koşul sayısı o kadar kötüdür ki, gürültü matrisinin işlem sırası bile son basamaktaki farkları desimetrelere büyütebiliyor; vektörleştirilmiş kodda işlem sırası bu yüzden korunur.
 
@@ -215,6 +247,11 @@ Modeller v2.9 itibarıyla tamdır: ANTEX PCO/PCV, uydu PCV, ORBEX yönelim, wind
 - Teunissen, P.J.G., Joosten, P., Tiberius, C. (1999). Geometry-free ambiguity success rates in case of partial fixing. ION NTM.
 - Verhagen, S., Teunissen, P.J.G. (2013). The ratio test for future GNSS ambiguity resolution. *GPS Solutions* 17.
 - Yang, Y., Song, L., Xu, T. (2002). Robust estimator for correlated observations based on bifactor equivalent weights. *J. Geodesy* 76 (IGG-III).
+- Baarda, W. (1968). *A testing procedure for use in geodetic networks.* Netherlands Geodetic Commission, Publ. on Geodesy 2(5).
+- Pope, A.J. (1976). *The statistics of residuals and the detection of outliers.* NOAA Technical Report NOS 65 NGS 1.
+- Huber, P.J. (1964). Robust estimation of a location parameter. *Ann. Math. Statist.* 35, 73–101.
+- Krarup, T., Juhl, J., Kubik, K. (1980). Götterdämmerung over least squares adjustment. *14th ISP Congress*, Hamburg, B3, 369–378.
+- Teunissen, P.J.G. (1990). Quality control in integrated navigation systems. *IEEE AES Magazine* 5(7), 35–41.
 - Yang, Y., He, H., Xu, G. (2001). Adaptively robust filtering for kinematic geodetic positioning. *J. Geodesy* 75.
 - Saastamoinen, J. (1972). Atmospheric correction for the troposphere and stratosphere in radio ranging of satellites. AGU Monograph 15.
 - Friedman, J.H. (2001). Greedy function approximation: a gradient boosting machine. *Annals of Statistics* 29.

@@ -18,6 +18,8 @@ by Guo & Zhang 2014). Post-fit residuals are not used: the estimate would feed b
 from dataclasses import dataclass, field
 import numpy as np
 from scipy.stats import chi2
+from .quality import (QualityOptions, TestResult, EXCLUDED, DIFFUSE, evaluate, identify, igg3,
+                      robust_inflation)
 
 
 @dataclass
@@ -31,20 +33,11 @@ class UpdateReport:
     factors: dict = field(default_factory=dict)   # adaptive variance factor per observation class
     gain: np.ndarray = None      # Kalman gain of the final iteration (x+ = x- + gain @ innovation)
     design: np.ndarray = None    # design matrix H of the final iteration
+    test: TestResult = None      # outlier test (global / Baarda / Pope) of the update, if requested
 
     @property
     def downweighted(self):
         return int(np.sum(self.inflation > 1))
-
-
-def igg3(standardized, k0=2.5, k1=6.0):
-    """IGG-III equivalent-weight factor (Yang 1994); returns variance inflation >= 1."""
-    v = np.abs(standardized)
-    weight = np.ones_like(v)
-    mid = (v > k0) & (v <= k1)
-    weight[mid] = k0/v[mid]*((k1-v[mid])/(k1-k0))**2
-    weight[v > k1] = 1e-8
-    return 1/np.maximum(weight, 1e-8)
 
 
 class ExtendedKalmanFilter:
@@ -120,9 +113,42 @@ class ExtendedKalmanFilter:
         return state, gain, h, r, s, innovation, groups, count
 
     def update(self, model, groups_count, iterations=8, tolerance=1e-4,
-               robust=False, adaptive=False, adaptive_indices=None, adaptive_threshold=None, classes=None):
+               robust=False, adaptive=False, adaptive_indices=None, adaptive_threshold=None, classes=None, active=None,
+               quality=None, min_groups=1):
         """Gauss-Newton iterated update in Joseph form; optional IGG-III, fading and (adaptive with
-        ``classes``) per-class variance factors."""
+        ``classes``) per-class variance factors.
+
+        ``robust``: False, True ('igg3') or the weight function 'igg3' / 'huber' / 'danish' (``quality`` holds the
+        constants). ``quality`` (QualityOptions): outlier test 'global' / 'baarda' / 'pope' of the update
+        (processing.estimation.quality); identified groups are excluded one at a time, keeping ``min_groups``.
+
+        ``active`` (sorted state indices starting with the position): the update runs on this sub-state only;
+        the other states must be uncorrelated with it (their rows/columns of P are zero off the diagonal), so the
+        result equals the full update at the cost of the active dimension. Gain and design of the report are
+        returned in full size."""
+        if active is not None and len(active) < len(self.x):
+            a = np.asarray(active, int)
+            full_x, full_p = self.x, self.P
+            frozen = full_x.copy()
+
+            def sub_model(state, inflation, _raw=model):
+                current = frozen.copy()
+                current[a] = state
+                measured, predicted, h, r, groups = _raw(current, inflation)
+                return measured, predicted, h[:, a], r, groups
+            self.x, self.P = full_x[a].copy(), full_p[np.ix_(a, a)].copy()
+            try:
+                report = self.update(sub_model, groups_count, iterations, tolerance, robust, adaptive,
+                                     adaptive_indices, adaptive_threshold, classes, None, quality, min_groups)
+            finally:
+                full_x[a], full_p[np.ix_(a, a)] = self.x, self.P
+                self.x, self.P = full_x, full_p
+            gain = np.zeros((len(full_x), report.gain.shape[1]))
+            gain[a] = report.gain
+            design = np.zeros((report.design.shape[0], len(full_x)))
+            design[:, a] = report.design
+            report.gain, report.design = gain, design
+            return report
         factors = {}
         if adaptive and classes is not None:
             classes = np.asarray(classes)
@@ -153,10 +179,18 @@ class ExtendedKalmanFilter:
                 alpha = statistic/threshold
                 idx = np.asarray(adaptive_indices)
                 prior_cov[np.ix_(idx, idx)] *= alpha
-        for _ in range(5 if robust else 1):
-            state, gain, h, r, s, innovation, groups, count = self._iterate(
-                model, prior, prior_cov, inflation, iterations, tolerance)
-            if not robust:
+        method = ('igg3' if robust is True else robust) if robust else None
+        quality = quality or QualityOptions()
+        test, done = None, None
+        if quality.active:
+            test, done = self._outlier_test(model, prior, prior_cov, inflation, iterations, tolerance, quality, min_groups)
+        for loop in range(5 if method else 1):
+            if done is not None and loop == 0:
+                state, gain, h, r, s, innovation, groups, count = done
+            else:
+                state, gain, h, r, s, innovation, groups, count = self._iterate(
+                    model, prior, prior_cov, inflation, iterations, tolerance)
+            if not method:
                 break
             # Post-fit residuals standardized by their own covariance R - H P+ H^T; unlike
             # predicted innovations they stay informative when the prior is still diffuse.
@@ -167,7 +201,9 @@ class ExtendedKalmanFilter:
             standardized = residual*np.sqrt(inflation[groups]/np.maximum(variance, 1e-12))
             worst = np.zeros(groups_count)
             np.maximum.at(worst, groups, np.abs(standardized))
-            updated = np.maximum(inflation, igg3(worst))
+            updated = np.maximum(inflation, robust_inflation(method, worst, quality))
+            if test is not None:
+                updated[test.excluded] = EXCLUDED
             if np.allclose(updated, inflation):
                 break
             inflation = updated
@@ -175,4 +211,40 @@ class ExtendedKalmanFilter:
         cov = identity@prior_cov@identity.T+gain@r@gain.T
         self.x, self.P = state, (cov+cov.T)/2
         nis = float(innovation@np.linalg.solve(s, innovation)/len(innovation))
-        return UpdateReport(nis, alpha, inflation, count, innovation, groups, factors, gain, h)
+        return UpdateReport(nis, alpha, inflation, count, innovation, groups, factors, gain, h, test)
+
+    def _outlier_test(self, model, prior, prior_cov, inflation, iterations, tolerance, quality, min_groups):
+        """DIA on the update: global test, then Baarda w / Pope tau of the post-fit residuals; the group of the
+        largest significant statistic gets the EXCLUDED inflation and the update is repeated. ``inflation`` is
+        changed in place; returns (TestResult, last _iterate output)."""
+        result, first = TestResult(quality.test), None
+        while True:
+            out = self._iterate(model, prior, prior_cov, inflation, iterations, tolerance)
+            state, gain, h, r, s, innovation, groups, count = out
+            residual = innovation-h@(gain@innovation)                 # linearized post-fit residual = R S^-1 e
+            posterior = prior_cov-gain@h@prior_cov
+            residual_cov = r-h@posterior@h.T
+            weight = np.linalg.inv(r)
+            kept = ~np.isin(groups, result.excluded)
+            rows = np.flatnonzero(kept)
+            statistic = max(float(innovation[rows]@(weight@residual)[rows]), 0.0)
+            observed = np.any(h[rows] != 0, axis=0)
+            diffuse = int(np.sum(observed & (np.diag(prior_cov) >= DIFFUSE)))
+            df = len(rows)-diffuse
+            result.statistic, result.df = statistic, df
+            result.sigma0 = float(np.sqrt(statistic/df)) if df > 0 else np.nan
+            if df < 1:
+                break
+            crit, rejected, local, local_crit = evaluate(quality, residual, weight, residual_cov, statistic, df, rows)
+            result.critical, result.passed, result.local_critical = crit, not rejected, local_crit
+            result.local_max = float(np.max(np.abs(local[rows]))) if quality.test != 'global' and len(rows) else np.nan
+            if first is None:
+                first = result.first_passed = not rejected
+            if not rejected or quality.test == 'global' or len(result.excluded) >= quality.max_exclusions:
+                break
+            group = identify(local, local_crit, groups, result.excluded, min_groups, len(inflation))
+            if group is None:
+                break
+            result.excluded.append(group)
+            inflation[group] = EXCLUDED
+        return result, out
