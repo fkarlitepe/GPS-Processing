@@ -44,9 +44,10 @@ STAT_COLUMNS = [('solution', 'Method', 190), ('final_3d', 'Final 3D (m)', 90), (
                 ('rms_u', 'RMS U', 75), ('rms_3d', 'RMS 3D', 80), ('convergence_s', 'Convergence (min)', 110),
                 ('fix_rate', 'Fix rate', 75), ('mean_nis', 'Mean NIS', 75)]
 MUTED = '#5d7286'
-SELECTION_METHODS = {'All visible (no selection)': 'all', 'FIBO-GNSS + local search (Fibonacci sphere)': 'fibo-gnss+ls',
+SELECTION_METHODS = {'All visible (no selection)': 'all', 'FIBO-GNSS2 (spiral templates + exchange step)': 'fibo-gnss2',
+                     'FIBO-GNSS + local search (Fibonacci sphere)': 'fibo-gnss+ls',
                      'FIBO-GNSS (Fibonacci sphere)': 'fibo-gnss', 'Greedy backward elimination + local search': 'backward+ls',
-                     'Greedy backward elimination': 'backward', 'Highest C/N0': 'top-cn0', 'Azimuth sectors (quasi-optimal)': 'az-sector',
+                     'Greedy backward elimination': 'backward', 'Greedy forward addition + local search': 'forward+ls', 'Highest C/N0': 'top-cn0', 'Azimuth sectors (quasi-optimal)': 'az-sector',
                      'Random subset (lower bound)': 'random', 'Exhaustive search (small sets)': 'exhaustive'}
 SELECTION_WEIGHTS = {'Filter weights — WDOP with the EKF code variances': 'filter', 'Elevation — sin²(el)': 'elevation',
                      'C/N0 — σ² = a·10^(−C/N0/10)': 'cn0', 'None — classical (unweighted) DOP': 'none'}
@@ -313,20 +314,30 @@ class Application(tk.Tk):
         self.windup = self.row(rows, LabeledValue(ekf, 'Phase wind-up', 'bool', True, hint='nominal-yaw wind-up on the IF phase; required by OSB/FCB AR products'))
         self.tides = self.row(rows, LabeledValue(ekf, 'Solid Earth tide', 'bool', True, hint='IERS 2010 degree-2 displacement (up to ~30 cm radial)'))
         self.robust = self.row(rows, LabeledValue(ekf, 'Robust update', 'bool', True, hint='down-weights outlying observations'))
-        self.robust_method = self.row(rows, LabeledValue(ekf, 'Robust weight function', 'choice', 'igg3', ['igg3', 'huber', 'danish'],
-                                                         hint='IGG-III (Yang 1994) · Huber (1964), k = 1.5 · Danish (Krarup et al. 1980), c = 2'))
+        self.robust_method = self.row(rows, LabeledValue(ekf, '    Robust weight function', 'choice', 'igg3', ['igg3', 'huber', 'danish'],
+                                                         hint='IGG-III (Yang 1994) · Huber (1964) · Danish (Krarup et al. 1980)'))
+        self.huber_k = self.row(rows, LabeledValue(ekf, '    Huber constant k', 'float', 1.5, step=0.1,
+                                                   hint='full weight for |v/σ| ≤ k, then k/|v/σ|'))
+        self.danish_c = self.row(rows, LabeledValue(ekf, '    Danish constant c', 'float', 2.0, step=0.1,
+                                                    hint='full weight for |v/σ| ≤ c, then exp(1 − (v/σc)²)'))
         self.outlier_test = self.row(rows, LabeledValue(ekf, 'Outlier test', 'choice', 'none', ['none', 'global', 'baarda', 'pope'],
                                                         hint='global: chi-square model test (flag) · baarda: data snooping, B-method · pope: tau test'))
-        self.test_alpha = self.row(rows, LabeledValue(ekf, 'Local test level α0', 'float', 0.001, step=0.001, hint='Baarda w-test (two-sided)'))
-        self.global_alpha = self.row(rows, LabeledValue(ekf, 'Global test level α', 'float', 0.01, step=0.01, hint='chi-square test (global, Pope)'))
+        self.global_alpha = self.row(rows, LabeledValue(ekf, '    Global test level α', 'float', 0.01, step=0.01,
+                                                        hint='chi-square test; Pope splits it over the observations'))
+        self.test_alpha = self.row(rows, LabeledValue(ekf, '    Local test level α0', 'float', 0.001, step=0.001,
+                                                      hint='w-test, two-sided; the global level follows from the B-method'))
+        self.test_power = self.row(rows, LabeledValue(ekf, '    Test power 1 − β0', 'float', 0.80, step=0.05, hint='B-method (λ0 = 17.07 for 0.001 / 0.80)'))
+        self.max_exclusions = self.row(rows, LabeledValue(ekf, '    Max. exclusions per epoch', 'int', 3,
+                                                          hint='satellites removed one by one while the test rejects'))
         self.code_sigma = self.row(rows, LabeledValue(ekf, 'Raw code σ (zenith)', 'float', 0.3, step=0.1, hint='m'))
         self.phase_sigma = self.row(rows, LabeledValue(ekf, 'Raw phase σ (zenith)', 'float', 0.003, step=0.001, hint='m'))
         self.sequential_info = self.row(rows, ttk.Label(ekf, text='Sequential LS reproduces the v2.0 result unchanged: no process noise, troposphere estimation, '
                                                         'physical corrections or atmosphere products. Use it as the baseline in comparisons.',
                                                         wraplength=950, foreground=MUTED), anchor='w', pady=(6,0))
-        for item in (self.estimator, self.dynamics):
+        for item in (self.estimator, self.dynamics, self.robust_method, self.outlier_test):
             item.widget.bind('<<ComboboxSelected>>', self.update_states)
-        self.estimate_troposphere.widget.configure(command=self.update_states)
+        for item in (self.estimate_troposphere, self.physical, self.robust):
+            item.widget.configure(command=self.update_states)
 
         atmosphere = self.atmosphere_section = section('External atmosphere products')
         rows = self.rows[atmosphere]
@@ -396,8 +407,8 @@ class Application(tk.Tk):
                  'Every epoch, after the elevation mask and the cycle-slip check (which still see all visible satellites), only the '
                  'chosen number of satellites enters the filter update. The subset minimises a DOP of the PPP geometry '
                  '(E, N, U, one receiver clock per system and the ZWD column): classical DOP with W = I, or weighted DOP '
-                 '(WDOP, Q = (GᵀWG)⁻¹) with elevation, C/N0 or the filter\'s own code variances. FIBO-GNSS generates 48 candidate '
-                 'subsets from rotated Fibonacci-sphere directions and keeps the best one. The analysis (Results → Satellite selection) '
+                 '(WDOP, Q = (GᵀWG)⁻¹) with elevation, C/N0 or the filter\'s own code variances. FIBO-GNSS2 refines the best '
+                 'candidates of three Fibonacci-spiral templates with an exchange step; BACKWARD + LS is nearly as good at a quarter of the cost. The analysis (Results → Satellite selection) '
                  'lists the visible and used satellites, DOP/WDOP, each satellite\'s DOP value and its share of the Kalman correction.'),
                  anchor='w', pady=(0,6))
         self.selection = self.row(rows, LabeledValue(sel, 'Selection method', 'choice', list(SELECTION_METHODS)[0], SELECTION_METHODS, width=30))
@@ -407,6 +418,11 @@ class Application(tk.Tk):
         self.selection_interval = self.row(rows, LabeledValue(sel, 'Keep a subset for', 'float', 0.0, step=30, hint='s, while all its satellites stay visible (0 = re-select every epoch)'))
         self.selection_hysteresis = self.row(rows, LabeledValue(sel, 'Hysteresis', 'float', 0.05, step=0.01, hint='switch only if the DOP improves by this fraction (keeps phase arcs)'))
         self.selection_troposphere = self.row(rows, LabeledValue(sel, 'ZWD column in the DOP geometry', 'bool', True))
+        self.selection_state = self.row(rows, LabeledValue(sel, 'Unselected ambiguities', 'choice', 'keep', ['keep', 'drop'],
+                                                           hint='keep: stay in the filter and continue on return (recommended) · drop: reset'))
+        self.selection_warm_start = self.row(rows, LabeledValue(sel, 'Previous subset as candidate', 'bool', False,
+                                                                hint='FIBO methods: still-visible members of the last subset are one more candidate'))
+        self.selection_seed = self.row(rows, LabeledValue(sel, 'Random seed', 'int', 0, hint='same seed → same random subsets'))
         self.selection_analysis = self.row(rows, LabeledValue(sel, 'DOP analysis without selection', 'bool', True,
                                                               hint='write the analysis tables also when all satellites are used'))
         self.selection.widget.bind('<<ComboboxSelected>>', lambda event: self.update_states())
@@ -567,6 +583,10 @@ class Application(tk.Tk):
         tree.pack(fill='both', expand=True)
         return tree
 
+    @property
+    def quality_rows(self):
+        return {self.robust_method, self.huber_k, self.danish_c, self.global_alpha, self.test_alpha, self.test_power, self.max_exclusions}
+
     def update_states(self, *_):
         technique = self.technique.get()
         ar = technique != 'PPP'
@@ -586,8 +606,8 @@ class Application(tk.Tk):
         if not ar:
             hidden |= {self.ar_field, self.ar_hint, self.ar_section, self.fcb_section}     # FCBs only matter for PPP-AR
         if not ekf:
-            hidden |= {self.dynamics, self.estimate_troposphere, self.physical, self.mapping, self.windup, self.tides, self.robust, self.robust_method,
-                       self.outlier_test, self.test_alpha, self.global_alpha, self.ml_section}
+            hidden |= {self.dynamics, self.estimate_troposphere, self.physical, self.mapping, self.windup, self.tides, self.robust,
+                       self.outlier_test, self.ml_section} | self.quality_rows
             if not ar:
                 # v2.0 LS uses its own fixed weights and no atmosphere models.
                 hidden |= {self.code_sigma, self.phase_sigma, self.atmosphere_section}
@@ -595,8 +615,36 @@ class Application(tk.Tk):
             hidden.add(self.sequential_info)
         if ar or not ekf:
             hidden.add(self.selection_section)
-        elif SELECTION_METHODS[self.selection.get()] == 'all':
-            hidden |= {self.selection_count, self.selection_weighting, self.selection_objective, self.selection_interval, self.selection_hysteresis}
+        else:
+            chosen = SELECTION_METHODS[self.selection.get()]
+            if chosen == 'all':
+                hidden |= {self.selection_count, self.selection_weighting, self.selection_objective, self.selection_interval,
+                           self.selection_hysteresis, self.selection_troposphere, self.selection_state, self.selection_warm_start,
+                           self.selection_seed}
+            else:
+                hidden.add(self.selection_analysis)          # the analysis is always written when satellites are selected
+                if not chosen.startswith('fibo'):
+                    hidden.add(self.selection_warm_start)
+                if chosen != 'random':
+                    hidden.add(self.selection_seed)
+            if not tropo:
+                hidden.add(self.selection_troposphere)       # no ZWD column without ZWD estimation
+        if ekf:
+            # Show only the settings of the chosen robust weight function and outlier test.
+            robust = self.robust.get()
+            function = self.robust_method.get()
+            test = self.outlier_test.get()
+            shown = set()
+            if robust:
+                shown.add(self.robust_method)
+                if function == 'huber': shown.add(self.huber_k)
+                if function == 'danish': shown.add(self.danish_c)
+            if test in ('global', 'pope'): shown.add(self.global_alpha)
+            if test == 'baarda': shown |= {self.test_alpha, self.test_power}
+            if test in ('baarda', 'pope'): shown.add(self.max_exclusions)
+            hidden |= self.quality_rows - shown
+            if not (self.physical.get() or tropo):
+                hidden.add(self.mapping)                     # mapping functions are used only by ZHD and ZWD
         if not (ekf and self.dynamics.get() == 'kinematic'):
             hidden.add(self.position_noise)
         if not tropo:
@@ -695,8 +743,9 @@ class Application(tk.Tk):
             estimator=ESTIMATORS[self.estimator.get()], dynamics=self.dynamics.get(), position_noise=self.position_noise.get(),
             estimate_troposphere=self.estimate_troposphere.get(), troposphere_noise=self.troposphere_noise.get(),
             physical_corrections=self.physical.get(), robust=self.robust.get(), code_sigma=self.code_sigma.get(),
-            robust_method=self.robust_method.get(), outlier_test=self.outlier_test.get(), test_alpha=self.test_alpha.get(),
-            global_alpha=self.global_alpha.get(),
+            robust_method=self.robust_method.get(), huber_k=self.huber_k.get(), danish_c=self.danish_c.get(),
+            outlier_test=self.outlier_test.get(), test_alpha=self.test_alpha.get(), test_power=self.test_power.get(),
+            global_alpha=self.global_alpha.get(), max_exclusions=self.max_exclusions.get(),
             phase_sigma=self.phase_sigma.get(), integer_method=INTEGER[self.integer_method.get()],
             ar_success_rate=self.success_rate.get(), ar_validation=VALIDATION[self.validation.get()],
             tropo_mapping=self.mapping.get(), repair_clock_jumps=self.clock_jumps.get(), phase_windup=self.windup.get(), solid_tides=self.tides.get(), ar_ratio=self.ar_ratio.get(), ar_min_epochs=self.ar_min_epochs.get(), ar_max_std=self.ar_max_std.get(),
@@ -718,7 +767,9 @@ class Application(tk.Tk):
         return dict(selection=method, selection_count=self.selection_count.get() if method != 'all' else 0,
                     selection_weighting=SELECTION_WEIGHTS[self.selection_weighting.get()], selection_objective=self.selection_objective.get(),
                     selection_interval=self.selection_interval.get(), selection_hysteresis=self.selection_hysteresis.get(),
-                    selection_troposphere=self.selection_troposphere.get(), selection_analysis=self.selection_analysis.get())
+                    selection_troposphere=self.selection_troposphere.get(), selection_analysis=self.selection_analysis.get(),
+                    selection_state=self.selection_state.get(), selection_warm_start=self.selection_warm_start.get(),
+                    selection_seed=self.selection_seed.get())
 
     def launch(self, job, tab):
         if self.busy: return
