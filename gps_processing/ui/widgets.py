@@ -6,6 +6,68 @@ from gps_processing.data_directory import DATA_DIR, require_data_file
 PALETTE = ['#1f6fb2', '#d9822b', '#2e9e5b', '#c23b4a', '#7b5ea7', '#8c6d1f', '#3b9aa8']
 
 
+class Tooltip:
+    """Short explanation shown while the mouse is over a widget (or any of its children); hidden when it leaves."""
+    def __init__(self, widget, text, delay=400, wrap=440):
+        self.widget, self.text, self.delay, self.wrap = widget, text, delay, wrap
+        self.window = self.job = None
+        self._bind(widget)
+
+    def _bind(self, widget):
+        widget.bind('<Enter>', self.schedule, add='+')
+        widget.bind('<Leave>', self.leave, add='+')
+        widget.bind('<ButtonPress>', self.hide, add='+')
+        for child in widget.winfo_children():
+            self._bind(child)
+
+    def inside(self):
+        try:
+            x, y = self.widget.winfo_pointerxy()
+            target = self.widget.winfo_containing(x, y)
+        except (KeyError, tk.TclError):      # pointer over a popup that Tk does not know (e.g. a combobox list)
+            return False
+        while target is not None:
+            if target is self.widget:
+                return True
+            target = target.master
+        return False
+
+    def schedule(self, event=None):
+        if self.window is None and self.job is None:
+            self.job = self.widget.after(self.delay, self.show)
+
+    def leave(self, event=None):
+        # Moving between the children of a row also produces <Leave>: hide only if the pointer left the row.
+        self.widget.after(30, lambda: None if self.inside() else self.hide())
+
+    def show(self):
+        self.job = None
+        if not self.text or self.window is not None or not self.widget.winfo_ismapped() or not self.inside():
+            return
+        window = self.window = tk.Toplevel(self.widget)
+        window.wm_overrideredirect(True)
+        try:
+            window.attributes('-topmost', True)
+        except tk.TclError:
+            pass
+        tk.Label(window, text=self.text, justify='left', wraplength=self.wrap, background='#fffbe6', foreground='#172c43',
+                 relief='solid', borderwidth=1, padx=8, pady=5, font=('DejaVu Sans', 9)).pack()
+        window.update_idletasks()
+        x, y = self.widget.winfo_pointerxy()
+        width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+        x = min(x+16, self.widget.winfo_screenwidth()-width-8)
+        y = y+20 if y+20+height < self.widget.winfo_screenheight() else y-height-12
+        window.wm_geometry(f'+{max(x, 0)}+{max(y, 0)}')
+
+    def hide(self, event=None):
+        if self.job is not None:
+            self.widget.after_cancel(self.job)
+            self.job = None
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+
+
 class FileField(ttk.Frame):
     def __init__(self, parent, label, directory=False, initial=None, filetypes=None):
         super().__init__(parent)

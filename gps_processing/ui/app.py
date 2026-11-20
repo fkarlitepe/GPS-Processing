@@ -10,7 +10,8 @@ from gps_processing.models import ProcessingConfig
 from gps_processing.data_directory import DATA_DIR, require_data_file
 from gps_processing.pipeline import run, compare, slug, VARIANTS, AR_ONLY, SELECTION_ONLY
 from gps_processing.processing.ml.ar_validation import CANDIDATES, DEFAULT_MODEL
-from gps_processing.ui.widgets import FileField, LabeledValue, LinePlot
+from gps_processing.ui.widgets import FileField, LabeledValue, LinePlot, Tooltip
+from gps_processing.ui.tips import TIPS, FIELD_TIPS
 
 ESTIMATORS = {'EKF (extended Kalman filter)': 'ekf', 'Adaptive EKF (variance factor per observation group)': 'adaptive-ekf', 'Sequential LS (v2.0 baseline)': 'sequential'}
 INTEGER = {'LAMBDA + partial AR (PAR)': 'lambda', 'Bounded ILS (v2.0)': 'ils',
@@ -183,9 +184,27 @@ class Application(tk.Tk):
                   'Site models: solid Earth tide, ocean loading (BLQ), pole tide (ERP), Shapiro delay, satellite PCV and ORBEX attitude.\n'
                   'Research software: no geodetic accuracy is guaranteed. Details: docs/PPP_AR.md, docs/EKF_ML.md, docs/ATMOSPHERE.md and docs/MODELS.md.\n\n'
                   'The original sources are preserved in the legacy/ folder.',justify='left',wraplength=950).pack(anchor='w')
+        self.add_tooltips()
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.update_states()
         self.after(100,self.poll)
+
+    def add_tooltips(self):
+        """Mouse-over explanations: why an input is needed and what it is used for (texts in ui/tips.py)."""
+        self.tooltips = []
+        for key, text in FIELD_TIPS.items():
+            if key in self.fields:
+                self.tooltips.append(Tooltip(self.fields[key], text))
+        for name, text in TIPS.items():
+            widget = getattr(self, name, None)
+            if widget is None:
+                continue
+            if isinstance(widget, dict):
+                for key, box in widget.items():
+                    if key in text:
+                        self.tooltips.append(Tooltip(box, text[key]))
+            else:
+                self.tooltips.append(Tooltip(widget.master if name == 'technique' else widget, text))
 
     def scrollable(self, parent):
         outer = ttk.Frame(parent)
@@ -224,7 +243,8 @@ class Application(tk.Tk):
                   '(holt.oso.chalmers.se/loading, model FES2014b, "displacement in CE frame"); up to several cm near coasts. '
                   'Pole tide: IERS 2010 eq. 7.24 with the polar motion of an IGS ERP file (a few mm). The solid Earth tide is '
                   'switched in Processing settings. Used by the EKF and PPP-AR solutions (not by the v2.0 baseline).').pack(anchor='w', pady=(6, 0))
-        ttk.Button(inputs,text='Select files from the Data folder',command=self.load_example).pack(anchor='w',pady=16)
+        self.example_button = ttk.Button(inputs,text='Select files from the Data folder',command=self.load_example)
+        self.example_button.pack(anchor='w',pady=16)
         ttk.Label(inputs,text='Fill the Data folder with the required files before processing.\nThe button selects only the observation file, ANTEX, BLQ, ERP, atmosphere products and the reference stations in Data/network.\nOrbit (SP3), clock (CLK), code-bias and AR products are chosen by you in Processing settings → Positioning technique:\nthe analysis centre you choose changes the solution and the convergence time, so it is never picked automatically.').pack(anchor='w')
 
     def row(self, rows, widget, **pack):
@@ -261,8 +281,10 @@ class Application(tk.Tk):
         row = self.row(self.rows[method], ttk.Frame(method), fill='x', pady=(4,2))
         ttk.Label(row, text='Satellite systems', width=30).pack(side='left')
         self.gps, self.galileo = tk.BooleanVar(value=True), tk.BooleanVar(value=False)
+        self.system_boxes = {}
         for text, var in (('GPS (L1/L2)', self.gps), ('Galileo (E1/E5a)', self.galileo)):
-            ttk.Checkbutton(row, text=text, variable=var, command=self.update_states).pack(side='left', padx=(8,16))
+            box = self.system_boxes[text.split()[0]] = ttk.Checkbutton(row, text=text, variable=var, command=self.update_states)
+            box.pack(side='left', padx=(8,16))
         self.galileo_hint = self.row(self.rows[method], ttk.Label(method, wraplength=950, foreground='#a4511d', justify='left', text=
                  'Galileo needs: E1 + E5a observations in the RINEX file; a multi-GNSS SP3 and CLK that contain Galileo '
                  '(e.g. *MGX* products — IGS final GPS orbits do not); for PPP-AR an AR product with Galileo biases '
@@ -378,7 +400,8 @@ class Application(tk.Tk):
         self.ml_model = self.row(rows, LabeledValue(ar, 'Validator model to train', 'choice', DEFAULT_MODEL, CANDIDATES,
                                                     hint='default = best in the fixed-failure-rate benchmark'))
         self.validator_buttons = self.row(rows, ttk.Frame(ar), fill='x')
-        ttk.Button(self.validator_buttons, text='Train validator (Monte Carlo) and save to Data/models', command=self.train_validator).pack(side='left')
+        self.train_button = ttk.Button(self.validator_buttons, text='Train validator (Monte Carlo) and save to Data/models', command=self.train_validator)
+        self.train_button.pack(side='left')
         ttk.Label(self.validator_buttons, text=f'  If no file is selected, {DEFAULT_MODEL} is trained in memory on first use.', foreground=MUTED).pack(side='left')
         self.ar_hold = self.row(rows, LabeledValue(ar, 'Fix-and-hold', 'bool', False,
                                                    hint='integers fixed identically for N epochs constrain the float filter (PRIDE, RTKLIB)'))
@@ -386,7 +409,8 @@ class Application(tk.Tk):
         self.ar_fixability = self.row(rows, LabeledValue(ar, 'ML fixability (self-supervised)', 'bool', False,
                                                          hint='float pass → hindsight labels → candidate order, gate and search trigger'))
         diagnostic = self.row(rows, ttk.Frame(ar), fill='x', pady=(8, 0))
-        ttk.Button(diagnostic, text='Narrow-lane diagnostic', command=self.start_diagnostic).pack(side='left')
+        self.diagnostic_button = ttk.Button(diagnostic, text='Narrow-lane diagnostic', command=self.start_diagnostic)
+        self.diagnostic_button.pack(side='left')
         ttk.Label(diagnostic, wraplength=760, foreground=MUTED, justify='left', text=
                   '  Holds the coordinates (reference above, else the converged float PPP), fixes nothing and reports how close the '
                   'float N1 ambiguities are to integers, with and without the extra models. Uniform fractions = products from '
@@ -431,8 +455,10 @@ class Application(tk.Tk):
         row = self.row(self.rows[ref], ttk.Frame(ref), fill='x')
         ttk.Label(row, text='Reference X Y Z (m, ECEF)', width=30).pack(side='left')
         self.reference = tk.StringVar()
+        self.reference_row = row
+        self.header_button = ttk.Button(row, text='Take from RINEX header', command=self.reference_from_header)
         ttk.Entry(row, textvariable=self.reference, width=48).pack(side='left', padx=8)
-        ttk.Button(row, text='Take from RINEX header', command=self.reference_from_header).pack(side='left')
+        self.header_button.pack(side='left')
         self.row(self.rows[ref], ttk.Label(ref, text='If empty, errors are computed against the last-epoch solution (internal consistency). Enter an IGS/SINEX coordinate to obtain true accuracy and convergence time.',
                                             wraplength=950, foreground=MUTED), anchor='w', pady=(6,0))
 
@@ -447,6 +473,7 @@ class Application(tk.Tk):
                  'Files in Data/network are listed automatically.'), anchor='w', pady=(0,6))
         self.fcb = self.row(self.rows[extra], tk.Listbox(extra,height=5), fill='x')
         buttons = self.row(self.rows[extra], ttk.Frame(extra), fill='x')
+        self.fcb_buttons = buttons
         ttk.Button(buttons,text='Add stations',command=self.add_fcb).pack(side='left')
         ttk.Button(buttons,text='Remove selected',command=self.remove_fcb).pack(side='left', padx=6)
         self.fcb_method = self.row(self.rows[extra], LabeledValue(extra, 'FCB estimator', 'choice', 'all', ['all', 'batch', 'ekf', 'ekf+ml']))
