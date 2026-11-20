@@ -7,6 +7,7 @@ Literatür/
 Data/models/
 Data/fcb/
 Data/network/
+Data/network_*/
 Data/obs/
 Data/products/
 Data/sinex/

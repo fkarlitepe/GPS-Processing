@@ -30,7 +30,6 @@ DAYS = ('2023327', '2024081', '2024173')
 STATIONS = {'GE': ['MADR', 'AJAC', 'BRUX', 'EBRE', 'ENAO', 'GRAZ', 'WTZR', 'SOFI'],
             'GEC': ['YEBE', 'AJAC', 'BRUX', 'EBRE', 'ENAO', 'GRAZ', 'WTZR', 'SOFI']}   # MADR tracks no BDS: YEBE
 TARGET = OUT/'selection_rev2'
-DOP = Path(__file__).resolve().parents[2]/'DOP'
 H = 0.05
 
 
@@ -56,7 +55,7 @@ def sinex_xyz(station, path):
 def rinex_of(station, day):
     if station == 'MADR':
         return DATA/'obs'/f'MADR00ESP_R_{day}0000_01D_30S_MO.rnx'
-    folders = [DATA/'network', DOP/'network'] if day == '2023327' else [DOP/f'network_{day}']
+    folders = [DATA/'network'] if day == '2023327' else [DATA/f'network_{day}']
     return [f for folder in folders for f in sorted(folder.glob(f'{station}*_MO.rnx'))][0]
 
 
