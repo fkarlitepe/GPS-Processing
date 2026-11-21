@@ -8,7 +8,7 @@ from gps_processing.io.sp3 import combine_sp3
 from gps_processing.io.export import export_result
 from gps_processing.io.products import is_osb
 from gps_processing.processing.orbit import interpolate_satellites
-from gps_processing.legacy.sequential import solve
+from gps_processing.processing.sequential import solve
 from gps_processing.models import ProcessingResult
 from gps_processing import analysis
 

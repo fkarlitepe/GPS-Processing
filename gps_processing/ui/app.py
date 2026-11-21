@@ -183,7 +183,7 @@ class Application(tk.Tk):
                   'Real AR products: RINEX CLK clocks, Bias-SINEX code/phase OSB (integer clocks) and GENFCB FCB; ANTEX PCO/PCV and phase wind-up.\n'
                   'Site models: solid Earth tide, ocean loading (BLQ), pole tide (ERP), Shapiro delay, satellite PCV and ORBEX attitude.\n'
                   'Research software: no geodetic accuracy is guaranteed. Details: docs/PPP_AR.md, docs/EKF_ML.md, docs/ATMOSPHERE.md and docs/MODELS.md.\n\n'
-                  'The original sources are preserved in the legacy/ folder.',justify='left',wraplength=950).pack(anchor='w')
+                  'The original sources are preserved in the archive/v1_2023/ folder.',justify='left',wraplength=950).pack(anchor='w')
         self.add_tooltips()
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.update_states()

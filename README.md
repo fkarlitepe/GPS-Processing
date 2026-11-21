@@ -44,7 +44,7 @@ Tanımlanan uydular tek tek dışlanır ve test istatistikleri konum tablosuna y
 - *Yeni modeller:* okyanus yüklemesi (BLQ), kutup gelgiti (ERP), Shapiro gecikmesi, uydu PCV, ORBEX yönelimi. Ayrıntılar: [modeller ve teşhis](docs/MODELS.md).
 - *AR politikası:* PRIDE aday kapıları, Dong–Bock P0 sıralaması, FFRT kabul testi, uydu dışlamalı kısmi çözüm, isteğe bağlı fix-and-hold.
 - *EKF ve ML:* gözlem grubu başına uyarlamalı varyans faktörleri, bias'a duyarlı ML doğrulayıcı, kendi kendini eğiten çözülebilirlik modeli, FCB EKF'sinde öğrenilen süreç gürültüsü.
-- *Kompakt sistem:* tek EKF çekirdeği (float PPP ve PPP-AR aynı döngü; v2.8 sonuçlarıyla bit düzeyinde aynı), tek ürün girişi, v2.0 `legacy/` altına alındı, JSON/TOML/YAML ayar dosyası, scikit-learn isteğe bağlı.
+- *Kompakt sistem:* tek EKF çekirdeği (float PPP ve PPP-AR aynı döngü; v2.8 sonuçlarıyla bit düzeyinde aynı), tek ürün girişi, v1 betikleri `archive/v1_2023/` altına alındı, JSON/TOML/YAML ayar dosyası, scikit-learn isteğe bağlı.
 - *Büyük ağlar:* 100+ istasyonlu FCB ağı (paralel süreçler, vektörleştirilmiş yörünge enterpolasyonu ~70× hızlı, koordinat sabitleme, katkı sayısı filtresi, ağ uyarıları).
 
 **v2.8 (GNSS):** GPS (L1/L2) ve Galileo (E1/E5a) seçimli çözüm (`--systems G E`, arayüzde onay kutuları). RINEX 2/3, SP3, CLK, ANTEX, OSB ve FCB okuyucuları Galileo'yu da okur. Her sistemin kendi alıcı saati/biasları ve kendi referans uydusu vardır; FCB kestirimi sistem başına en az 5 istasyon ister. Ayrıntılar: [GNSS belgesi](docs/GNSS.md).
@@ -87,7 +87,19 @@ python -m gps_processing \
   --output results
 ```
 
-Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü açar; `python karlitepe_processing.py` aynı CLI argümanlarını kabul eder. Modülleri import etmek işlem başlatmaz veya pencere açmaz.
+Masaüstü arayüzü `python -m gps_processing --gui` ile açılır (kurulumdan sonra `togu-gps-gui`; komut satırı için `togu-gps`). Modülleri import etmek işlem başlatmaz veya pencere açmaz.
+
+## Klasör yapısı
+
+| Klasör | İçerik |
+|---|---|
+| `gps_processing/` | TOGU GNSS Processing yazılımının tamamı: okuyucular (`io/`), işlem çekirdeği (`processing/`), arayüz (`ui/`), CLI ve işlem servisi (`pipeline.py`) |
+| `experiments/` | Makaledeki deneylerin betikleri (Deney A, Deney B, ablasyon, NL testi, analiz ve harita) |
+| `tests/` | Birim testleri (`python3 -m unittest discover tests`) |
+| `manuscript/` | Makale kaynakları ve derleme betiği (`build.py`); çıktı .docx/.pdf dosyaları git'e girmez |
+| `docs/` | Yöntem belgeleri (PPP-AR, EKF/ML, FCB, GNSS, modeller, atmosfer, uydu seçimi) |
+| `Data/` | Örnek MADR verisi; deney verileri ve ürünler yerelde tutulur, git'e girmez |
+| `archive/v1_2023/` | 2023'teki özgün v1 betikleri ve resimleri; değiştirilmeden, yalnız tarihçe için saklanır, yazılım bunları kullanmaz |
 
 ## Modül yapısı
 
@@ -108,7 +120,7 @@ Eski girişler de kullanılabilir: `python "TOGU-GPS Processing.py"` arayüzü a
 | Kombinasyonlar | `gps_processing/processing/combinations.py` | Ionosphere-free ve Melbourne–Wübbena |
 | Yörünge | `gps_processing/processing/orbit.py` | Yayım zamanı, 10 noktalı 9. derece Lagrange, saat enterpolasyonu, Dünya dönüşü |
 | Geometri | `gps_processing/processing/geometry.py` | Yükseklik açısı, öncül kovaryans |
-| Konum çözümü (v2.0 temel, dondurulmuş) | `gps_processing/legacy/sequential.py` | Sıralı ağırlıklı kod/faz kestirimi; regresyon ve karşılaştırma için |
+| Konum çözümü (v2.0 temel, dondurulmuş) | `gps_processing/processing/sequential.py` | Sıralı ağırlıklı kod/faz kestirimi; regresyon ve karşılaştırma için |
 | EKF çekirdeği | `gps_processing/processing/engine.py`, `processing/estimation/` | Tek epok döngüsü ve durum düzeni (float PPP ve PPP-AR eklentileri); iterasyonlu EKF, IGG-III, gözlem grubu varyans faktörleri, kinematikte fading |
 | EKF float PPP | `gps_processing/processing/ppp_ekf.py` | XYZ, saat, ZWD, IF belirsizlikleri; artık tablosu |
 | Fiziksel modeller | `processing/troposphere.py`, `processing/cycle_slip.py` | Saastamoinen + Niell (varsayılan) veya Chao eşleme; LLI/boşluk/MW/GF kayma tespiti |
@@ -154,11 +166,11 @@ print(result.positions)
 
 ## Korunan bölümler ve değişiklikler
 
-Yedi özgün Python dosyasının tamamı **`legacy/` altında değiştirilmeden saklanmıştır**. Tez, resimler ve örnek veri dosyaları korunmuştur. Kök dizindeki eski modül adları yeni modüllere uyumluluk girişleridir. Eski API'de RINEX okuyucusu yaklaşık koordinatı DataFrame metadata'sında taşır; PPP çağrısında `approximate_xyz=` açıkça da verilebilir. Ara Excel dosyalarına bağımlılık kaldırılmıştır; ara çıktılar artık yalnız dışa aktarım aşamasında üretilir.
+Yedi özgün Python dosyası ve eski arayüzün resimleri **`archive/v1_2023/` altında değiştirilmeden saklanmıştır**; yazılım bunları kullanmaz. Ara Excel dosyalarına bağımlılık kaldırılmıştır; ara çıktılar artık yalnız dışa aktarım aşamasında üretilir.
 
 Sabit 32 uydu/900 saniye varsayımıyla SP3 satır sayma yerine gerçek epoklar okunur. Saat tahminindeki Random Forest yerine deterministik doğrusal enterpolasyon kullanılır; Lagrange hesabı büyük mutlak zamanlarla polinom üretmek yerine merkezlenmiş barycentric yöntemle yapılır. Bu nedenle sonuçlar eski betiklerle bit düzeyinde aynı değildir. Konum hesabında uydu/epok eşleştirmesi anahtarlarla yapılır, düşük yükseklikli gözlemler gerçekten elenir, tüm çözülen epoklar saklanır. Kestirim saat durumunu her epokta serbest bırakır; faz kilit kaybı işareti, 120 saniyeden uzun boşluk veya 5 metreden büyük MW değişiminde ilgili belirsizliği sıfırlar. Bu eşikler temel araştırma varsayımlarıdır.
 
-FCB referans dosya alanı korunmuştur; FCB kestirimi henüz uygulanmadı. PPP-AR/SDBS ve PPP-AR/DCM araştırma çözücüleri ayrı modüllerdedir. Makine öğrenmesi ayrı bir yöntem değil, EKF ve AR kestirimine eklenen bileşenler olarak uygulanmıştır (docs/EKF_ML.md); özgün Random Forest kaynağı legacy altında korunur. RINEX 2 de desteklenmez. Harici model seçenekleri, ilgili model eklendiğinde `ProcessingConfig` üzerinden işlem servisine bağlanabilir.
+FCB referans dosya alanı korunmuştur; FCB kestirimi henüz uygulanmadı. PPP-AR/SDBS ve PPP-AR/DCM araştırma çözücüleri ayrı modüllerdedir. Makine öğrenmesi ayrı bir yöntem değil, EKF ve AR kestirimine eklenen bileşenler olarak uygulanmıştır (docs/EKF_ML.md); özgün Random Forest kaynağı `archive/v1_2023/` altında korunur. RINEX 2 de desteklenmez. Harici model seçenekleri, ilgili model eklendiğinde `ProcessingConfig` üzerinden işlem servisine bağlanabilir.
 
 ## Çıktılar
 
