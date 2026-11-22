@@ -87,12 +87,13 @@ python -m gps_processing \
   --output results
 ```
 
-Masaüstü arayüzü `python -m gps_processing --gui` ile açılır (kurulumdan sonra `togu-gps-gui`; komut satırı için `togu-gps`). Modülleri import etmek işlem başlatmaz veya pencere açmaz.
+Masaüstü arayüzü kök dizindeki `TOGU-GPS Processing.py` dosyasıyla açılır (`python3 "TOGU-GPS Processing.py"`); `python3 -m gps_processing --gui` ve kurulumdan sonra `togu-gps-gui` de aynı arayüzü açar (komut satırı için `togu-gps`). Modülleri import etmek işlem başlatmaz veya pencere açmaz.
 
 ## Klasör yapısı
 
 | Klasör | İçerik |
 |---|---|
+| `TOGU-GPS Processing.py` | Arayüzü açan dosya (kök dizinde tek başlatıcı) |
 | `gps_processing/` | TOGU GNSS Processing yazılımının tamamı: okuyucular (`io/`), işlem çekirdeği (`processing/`), arayüz (`ui/`), CLI ve işlem servisi (`pipeline.py`) |
 | `experiments/` | Makaledeki deneylerin betikleri (Deney A, Deney B, ablasyon, NL testi, analiz ve harita) |
 | `tests/` | Birim testleri (`python3 -m unittest discover tests`) |
