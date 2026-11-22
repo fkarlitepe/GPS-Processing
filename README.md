@@ -1,12 +1,12 @@
 # TOGU GNSS Processing
 
-GNSS (GPS + Galileo) Precise Point Positioning (PPP / PPP-AR) araştırma projesi.
+TOGU GNSS Processing, GPS, Galileo ve BeiDou gözlemleriyle hassas nokta konumlama (PPP) ve tamsayı belirsizlik çözümlü PPP (PPP-AR) yapan bir araştırma yazılımıdır. Tokat Gaziosmanpaşa Üniversitesi'nde geliştirilmiştir. Float PPP ve üç PPP-AR kullanıcı modeli aynı genişletilmiş Kalman filtresini (EKF) kullanır. Makine öğrenmesi ayrı bir yöntem değildir; EKF'nin ve tamsayı kararının belirli adımlarını destekleyen bileşenler olarak eklenmiştir. Masaüstü arayüzü ve komut satırı aynı işlem servisini çalıştırır.
 
 ## Paper and reproducibility
 
 This repository contains the software and scripts of the paper *Supporting GPS+Galileo PPP Ambiguity Resolution with an Extended Kalman Filter and Machine Learning* (Karlıtepe, submitted to the ASCE Journal of Surveying Engineering). It is released under the MIT License; see `CITATION.cff` for citation.
 
-The experiments use IGS station MADR on November 23, 2023 (day 327). The GNSS observations and the MGEX products (COD, GRG, WUM, GFZ) are not redistributed here; download them from the IGS data centres into the paths listed in `experiments/common.py`: the MADR RINEX file into `Data/obs/`, the network RINEX files (`experiments/network_stations.csv`) into `Data/network/`, the products into `Data/products/2023327/<centre>/`, the IGS SINEX file into `Data/sinex/` and the ANTEX, BLQ and ERP files into `Data/models/`. Then:
+The experiments use IGS station MADR on November 23, 2023 (day 327). The GNSS observations and the MGEX products (COD, GRG, WUM, GFZ) are not redistributed here. Download them from the IGS data centres into the paths listed in `experiments/common.py`: the MADR RINEX file into `Data/obs/`, the network RINEX files (`experiments/network_stations.csv`) into `Data/network/`, the products into `Data/products/2023327/<centre>/`, the IGS SINEX file into `Data/sinex/`, and the ANTEX, BLQ and ERP files into `Data/models/`. Then run:
 
 ```bash
 python3 -m experiments.nl_test                      # narrow-lane product test
@@ -16,141 +16,59 @@ python3 -m experiments.run_grid network results/experiments/network_fcb/fcb   # 
 python3 -m experiments.run_grid ablation            # contribution of each component
 python3 experiments/analyse.py products|network|ablation|nl   # tables, statistics and figures
 python3 experiments/station_map.py                  # station map (requires PyGMT)
-python3 -m experiments.run_selection                # Experiment S: satellite selection, DOP vs WDOP (8 stations)
-python3 experiments/analyse_selection.py
 ```
 
-Set `OMP_NUM_THREADS=1` when running the grids in parallel. Results are written to `results/experiments/`.
+Set `OMP_NUM_THREADS=1` when the grids run in parallel. Results are written to `results/experiments/`.
 
-**v3.2 (kalite kontrolü):** EKF güncellemesine istatistiksel testler ve seçilebilir robust kestirim eklendi:
-- global χ² model testi (`--outlier-test global`);
-- Baarda veri yoklaması, B-yöntemi (`baarda`);
-- Pope τ testi (`pope`);
-- Huber ve Danish ağırlık fonksiyonları (`--robust-method huber|danish`, IGG-III varsayılan).
+Uydu seçimi ve kalite kontrolü deneyleri bu makaleden ayrıdır: `python3 -m experiments.run_selection` (DOP ve ağırlıklı DOP, sekiz istasyon), `python3 -m experiments.run_selection_rev2 run GE|GEC` (üç gün, GPS+Galileo ve GPS+Galileo+BeiDou) ve `python3 -m experiments.run_quality` (aykırı gözlem testleri ve robust kestirim). Analizleri `experiments/analyse_selection.py` ve `experiments/analyse_selection_rev2.py` üretir.
 
-Tanımlanan uydular tek tek dışlanır ve test istatistikleri konum tablosuna yazılır. Aynı testler genel en küçük kareler dengelemesi için `processing.estimation.quality.least_squares` ile de kullanılabilir. Ayrıntılar [EKF ve ML belgesinde](docs/EKF_ML.md); deney için `python3 -m experiments.run_quality` kullanılır.
+## Temel özellikler
 
-**v3.1 (uydu seçimi, ikinci revizyon):** BeiDou (B1I/B3I, GEO hariç) desteği: `--systems G E C` ile üç sistemli PPP (sistem başına alıcı saati, ANTEX C02/C06, Bias-SINEX C2I/C6I). Yeni seçim yöntemleri `fibo-gnss2` (üç Fibonacci şablonu: düzgün, zenit + alçak halka, sistem başına; kalite süzgeci yok; en iyi üç aday iyileştirilir) ve `forward+ls`; 1-değişim araması tüm değişimleri tek ters matristen (Woodbury, rank 2) puanlar ve her sistemde en az iki uydu bırakır. `--selection-state drop`: seçilmeyen uydular filtreden çıkar, yeniden seçildiklerinde yeni yay başlar. Float PPP güncellemesi yalnız filtredeki uyduların durumları üzerinde yapılır (`active_states`, sonuç tam güncellemeyle aynı). Deney: `python3 -m experiments.run_selection_rev2 run GE|GEC`, `... timing`, analiz `experiments/analyse_selection_rev2.py`.
+- **Gözlem ve ürünler:** RINEX 2.11 ve RINEX 3 gözlemleri; SP3 yörüngeleri, RINEX CLK saatleri, ANTEX, Bias-SINEX (kod ve faz OSB), GENFCB, ORBEX, IONEX, SINEX_TRO, BLQ ve ERP dosyaları.
+- **Fiziksel modeller:** Saastamoinen + Niell troposferi ve ZWD kestirimi; katı yer, okyanus yüklemesi ve kutup gelgitleri; uydu ve alıcı anten PCO/PCV; faz wind-up; Shapiro gecikmesi; alıcı saat sıçramalarının giderilmesi.
+- **Kestirim:** Float PPP ve PPP-AR için tek EKF çekirdeği; statik veya kinematik çözüm; IGG-III, Huber ve Danish robust kestirimi; global χ², Baarda ve Pope testleri; gözlem grubu başına uyarlamalı varyans faktörleri.
+- **PPP-AR:** SDBS, DCM ve IPC kullanıcı modelleri. Tamsayı kararı LAMBDA, bootstrapping veya kademeli yuvarlama ile verilir. Karar zinciri Dong–Bock sıralaması, başarı oranına göre kısmi çözüm, sabit hata oranlı oran testi (FFRT) ve uydu dışlamadan oluşur.
+- **Makine öğrenmesi:** Artıklardan öğrenilen gözlem varyansı, sapmalı float belirsizliklere duyarlı kabul testi ve kendi kendini eğiten çözülebilirlik modeli.
+- **Ürün denetimi ve FCB:** Dar şerit (NL) teşhis testi; bias, saat ve yörünge dosyalarının aynı merkezden geldiğinin denetimi; referans ağdan toplu, EKF ve EKF+ML yöntemleriyle FCB kestirimi ve istasyon dışarıda bırakmalı doğrulama.
+- **Uydu seçimi:** Float PPP'de her epokta k uydunun DOP veya ağırlıklı DOP ölçütüne göre seçimi (FIBO-GNSS, geri eleme, yerel arama ve diğer yöntemler).
 
-**v3.0 (uydu seçimi ve DOP / ağırlıklı DOP analizi):** Float PPP'de her epokta yalnız k uydu güncellemeye girer (`--selection fibo-gnss+ls --selection-count 8`). Seçim, PPP geometrisinin (E, N, U, sistem başına alıcı saati, ZWD) klasik DOP'unu veya ağırlıklı DOP'unu (WDOP, `--selection-weighting none|elevation|cn0|filter`) en küçükler. Yöntemler: FIBO-GNSS (Fibonacci küresi adayları) ve yerel arama, geri eleme, en yüksek C/N0, azimut dilimleri, rastgele, tam tarama. Faz yaylarını korumak için histerezis ve tutma süresi seçenekleri var. Analiz bölümü: görünen/kullanılan uydular, epok başına DOP/WDOP, her uydunun DOP değeri, model terimleri, artıklar ve Kalman düzeltmesindeki payı (`selection_report.md`, `selection_*.csv`, SVG grafikler; arayüzde *Results → Satellite selection / DOP*). Ayrıntılar ve deney: [uydu seçimi belgesi](docs/SELECTION.md).
+## Kurulum
 
-**v2.1:** Kestirim noktalarına iterasyonlu **genişletilmiş Kalman filtresi** (statik/kinematik, ZWD kestirimi, IGG-III robust ve adaptif güncelleme), **LAMBDA + kısmi AR** ve iki **makine öğrenmesi** bileşeni (artıklardan öğrenilen gözlem varyansı, Monte Carlo ile eğitilmiş AR doğrulayıcı) eklendi; arayüze yöntem ayarları, grafikler ve **yöntem karşılaştırması** sekmesi geldi. Denklemler, örnek sonuçlar ve deney tasarımı: [EKF ve ML belgesi](docs/EKF_ML.md).
-
-**v2.5:** Integer phase clock (IPC, Laurichesse) kullanıcı modeli eklendi (`--technique PPP-AR/IPC`). SDBS/DCM, Shi & Gao (2014) karşılaştırmasına göre gözden geçirildi; referans uydu değişiminde belirsizlikler artık sıfırlanmıyor, tamsayı kaydırmayla korunuyor. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
-
-**v2.9 (literatüre göre gözden geçirme):**
-
-- *Teşhis ve ürün denetimi:* dar şerit teşhisi (`--diagnose-nl`); ürün merkezleri dosya başlığından denetleniyor. Data/fcb/post_2023327'deki `GBM…ABS.BIA` aslında CNES'in, saatler ise GFZ'nin.
-- *Yeni modeller:* okyanus yüklemesi (BLQ), kutup gelgiti (ERP), Shapiro gecikmesi, uydu PCV, ORBEX yönelimi. Ayrıntılar: [modeller ve teşhis](docs/MODELS.md).
-- *AR politikası:* PRIDE aday kapıları, Dong–Bock P0 sıralaması, FFRT kabul testi, uydu dışlamalı kısmi çözüm, isteğe bağlı fix-and-hold.
-- *EKF ve ML:* gözlem grubu başına uyarlamalı varyans faktörleri, bias'a duyarlı ML doğrulayıcı, kendi kendini eğiten çözülebilirlik modeli, FCB EKF'sinde öğrenilen süreç gürültüsü.
-- *Kompakt sistem:* tek EKF çekirdeği (float PPP ve PPP-AR aynı döngü; v2.8 sonuçlarıyla bit düzeyinde aynı), tek ürün girişi, v1 betikleri `archive/v1_2023/` altına alındı, JSON/TOML/YAML ayar dosyası, scikit-learn isteğe bağlı.
-- *Büyük ağlar:* 100+ istasyonlu FCB ağı (paralel süreçler, vektörleştirilmiş yörünge enterpolasyonu ~70× hızlı, koordinat sabitleme, katkı sayısı filtresi, ağ uyarıları).
-
-**v2.8 (GNSS):** GPS (L1/L2) ve Galileo (E1/E5a) seçimli çözüm (`--systems G E`, arayüzde onay kutuları). RINEX 2/3, SP3, CLK, ANTEX, OSB ve FCB okuyucuları Galileo'yu da okur. Her sistemin kendi alıcı saati/biasları ve kendi referans uydusu vardır; FCB kestirimi sistem başına en az 5 istasyon ister. Ayrıntılar: [GNSS belgesi](docs/GNSS.md).
-
-**v2.7:** RINEX 2.11 okuma; katı yer gelgiti (IERS 2010); OSB/FCB ürünlerinde eksik uydu saati düzeltildi (v2.6 hatası). `Data/network` istasyonları arayüzde otomatik listelenir; PPP-AR'de ürün yüklenmezse FCB'ler bu istasyonlardan kestirilip kullanılır. Referans ağdan (en az 5 istasyon) FCB kestirimi: Li & Zhang (2012) toplu çözüm, EKF ve EKF + ML kestiricileri, istasyon dışarıda bırakmalı doğrulama, GENFCB çıktısı (`--fcb-stations`). Ayrıntılar: [FCB belgesi](docs/FCB.md).
-
-**v2.6:** Gerçek ürünler: RINEX CLK saatleri (`--clock-file`), Bias-SINEX kod+faz OSB (`--ar-products *.BIA`) ve GENFCB FCB (`*.fcb`) AR ürünleri, ANTEX PCO/PCV (`--antex`) ve faz wind-up; tek günlük SP3 desteği. Ayrıntılar: [PPP-AR belgesi](docs/PPP_AR.md).
-
-Ayrıca (Banville et al. 2008): Bias-SINEX DSB/OSB dosyasıyla C1C/C2L gibi kodlar C1W/C2W'ye hizalanır (`--code-biases`), alıcı milisaniye saat sıçramaları algılanıp fazdan giderilir (varsayılan açık, `--no-clock-jump-repair`).
-
-**v2.4:** LAMBDA'ya alternatif tamsayı kestiricileri eklendi: dekorelasyonlu integer bootstrapping (+PAR) ve TCAR/CIR ilkesine göre kademeli yuvarlama (`--integer-method bootstrap|cascade`). Başarı oranları Ps-LAMBDA formülleriyle raporlanıyor; AR için ML doğrulayıcı scikit-learn ile seçildi. Ayrıntılar: [EKF ve ML belgesi](docs/EKF_ML.md).
-
-**v2.2:** IONEX küresel iyonosfer haritası (tek tabaka modeli, IF kombinasyonunda ikinci derece terim) ve SINEX_TRO istasyon ZTD ürünü (a-priori ZTD + Chen & Herring gradyanları) hesaba katılır (`--ionosphere`, `--troposphere`). Arayüz başlıkları ve açıklamaları İngilizcedir. Ayrıntılar: [Atmosphere products](docs/ATMOSPHERE.md).
-
-PPP-AR/SDBS ve PPP-AR/DCM için ayrı deneysel kullanıcı modelleri vardır. Ürün sözleşmesi, literatür karşılaştırması, denklemler ve bilimsel sınırlar için [PPP-AR teknik belgesi](docs/PPP_AR.md). AR için normalize saat/bias JSON ürünü gerekir; depoda bu ürün yoktur.
- Kod/faz gözlemlerinden deneysel **float PPP** çözümü üretir. Masaüstü arayüzü ve komut satırı aynı işlem servisini kullanır.
-
-## Kurulum ve çalıştırma
-
-Python 3.10 veya üzeri:
+Python 3.10 veya üzeri gerekir. Linux'ta arayüz için ayrıca Tk paketi (`python3-tk`) kurulmalıdır.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python -m gps_processing --gui
 ```
 
-Linux'ta masaüstü arayüzü için Tk desteği (`python3-tk`) ve bir grafik oturumu gerekir. Arayüzde **Data klasöründeki verileri seç** düğmesi Data içindeki dosyaları seçer. Veri dosyaları, işlem ayarları, sonuçlar ve proje bilgileri ayrı sekmelerdedir. İşlem arka planda yürütülür; ilerleme, hatalar ve epok sonuçları gösterilir.
+Zorunlu bağımlılıklar numpy, pandas, openpyxl ve scipy'dir. `pip install .[ml]` komutu scikit-learn ve joblib'i, `pip install .[config]` komutu YAML ve TOML desteğini ekler. scikit-learn kurulu değilse yazılım bağımlılıksız bir lojistik doğrulayıcı kullanır.
 
-Komut satırından örnek veri:
+## Çalıştırma
+
+**Arayüz.** Proje klasöründe aşağıdaki komut çalıştırılır:
 
 ```bash
-python -m gps_processing \
-  --sp3-before IGS0OPSFIN_20233260000_01D_15M_ORB.SP3 \
-  --sp3-day IGS0OPSFIN_20233270000_01D_15M_ORB.SP3 \
-  --sp3-after IGS0OPSFIN_20233280000_01D_15M_ORB.SP3 \
-  --rinex madr3270.23o \
-  --elevation-mask 10 \
-  --output results
+python3 "TOGU-GPS Processing.py"
 ```
 
-Masaüstü arayüzü kök dizindeki `TOGU-GPS Processing.py` dosyasıyla açılır (`python3 "TOGU-GPS Processing.py"`); `python3 -m gps_processing --gui` ve kurulumdan sonra `togu-gps-gui` de aynı arayüzü açar (komut satırı için `togu-gps`). Modülleri import etmek işlem başlatmaz veya pencere açmaz.
+Aynı arayüz `python3 -m gps_processing --gui` komutuyla da açılır. Veri dosyaları, işlem ayarları, sonuçlar ve proje bilgileri ayrı sekmelerdedir. İşlem arka planda yürür; ilerleme ve hatalar ekranda gösterilir.
 
-## Klasör yapısı
-
-| Klasör | İçerik |
-|---|---|
-| `TOGU-GPS Processing.py` | Arayüzü açan dosya (kök dizinde tek başlatıcı) |
-| `gps_processing/` | TOGU GNSS Processing yazılımının tamamı: okuyucular (`io/`), işlem çekirdeği (`processing/`), arayüz (`ui/`), CLI ve işlem servisi (`pipeline.py`) |
-| `experiments/` | Makaledeki deneylerin betikleri (Deney A, Deney B, ablasyon, NL testi, analiz ve harita) |
-| `tests/` | Birim testleri (`python3 -m unittest discover tests`) |
-| `manuscript/` | Makale kaynakları ve derleme betiği (`build.py`); çıktı .docx/.pdf dosyaları git'e girmez |
-| `docs/` | Yöntem belgeleri (PPP-AR, EKF/ML, FCB, GNSS, modeller, atmosfer, uydu seçimi) |
-| `Data/` | Örnek MADR verisi; deney verileri ve ürünler yerelde tutulur, git'e girmez |
-| `archive/v1_2023/` | 2023'teki özgün v1 betikleri ve resimleri; değiştirilmeden, yalnız tarihçe için saklanır, yazılım bunları kullanmaz |
-
-## Modül yapısı
-
-| Bölüm | Dosya | Sorumluluk |
-|---|---|---|
-| Sabitler | `gps_processing/constants.py` | Işık hızı, frekanslar, elipsoit ve Dünya dönüşü |
-| Veri sözleşmeleri | `gps_processing/models.py` | Girdiler, doğrulama, gözlemler ve sonuçlar |
-| SP3 | `gps_processing/io/sp3.py` | GPS yörünge/saat okuma; gerçek tarihlerle gün birleştirme |
-| RINEX 3 | `gps_processing/io/rinex.py` | Başlığa göre gözlem alanları; L1/L2/L5 fazlarının metreye dönüşümü |
-| FCB kestirimi | `gps_processing/processing/fcb/` | Ağdan WL/NL UFO kestirimi (batch, EKF, EKF+ML), doğrulama, GENFCB yazımı |
-| Saat dosyası | `gps_processing/io/clock_rinex.py` | RINEX CLK 30 s / 5 s uydu saatleri |
-| AR ürünleri | `gps_processing/io/products.py` (tek giriş), `io/osb_products.py`, `io/fcb_products.py`, `io/ar_products.py` | Bias-SINEX kod+faz OSB, GENFCB FCB ve JSON → IF kod/faz ve MW düzeltmeleri |
-| Yer modelleri | `gps_processing/io/blq.py`, `io/erp.py`, `processing/tides.py` | Katı yer gelgiti, okyanus yüklemesi (BLQ), kutup gelgiti (ERP), Shapiro |
-| Uydu yönelimi | `gps_processing/io/orbex.py` | ORBEX kuaterniyonları (tutulma/öğle dönüşleri) |
-| Anten modelleri | `gps_processing/io/antex.py`, `processing/antenna.py` | ANTEX uydu PCO/PCV, alıcı PCO/PCV, nominal veya ORBEX yaw, faz wind-up |
-| Kod biasları | `gps_processing/io/bias_sinex.py` | Bias-SINEX DSB/OSB okuma; GPS kodlarını C1W/C2W'ye, Galileo kodlarını C1C/C5Q'ya hizalama |
-| Saat sıçraması | `gps_processing/processing/clock_jump.py` | 1 ms alıcı saat sıçramalarının algılanması ve fazdan giderilmesi |
-| Kombinasyonlar | `gps_processing/processing/combinations.py` | Ionosphere-free ve Melbourne–Wübbena |
-| Yörünge | `gps_processing/processing/orbit.py` | Yayım zamanı, 10 noktalı 9. derece Lagrange, saat enterpolasyonu, Dünya dönüşü |
-| Geometri | `gps_processing/processing/geometry.py` | Yükseklik açısı, öncül kovaryans |
-| Konum çözümü (v2.0 temel, dondurulmuş) | `gps_processing/processing/sequential.py` | Sıralı ağırlıklı kod/faz kestirimi; regresyon ve karşılaştırma için |
-| EKF çekirdeği | `gps_processing/processing/engine.py`, `processing/estimation/` | Tek epok döngüsü ve durum düzeni (float PPP ve PPP-AR eklentileri); iterasyonlu EKF, IGG-III, gözlem grubu varyans faktörleri, kinematikte fading |
-| EKF float PPP | `gps_processing/processing/ppp_ekf.py` | XYZ, saat, ZWD, IF belirsizlikleri; artık tablosu |
-| Fiziksel modeller | `processing/troposphere.py`, `processing/cycle_slip.py` | Saastamoinen + Niell (varsayılan) veya Chao eşleme; LLI/boşluk/MW/GF kayma tespiti |
-| PPP-AR | `gps_processing/processing/ar/` | SDBS/DCM/IPC kullanıcı modeli, LAMBDA/bootstrapping PAR, `policy.py`: P0 sıralama, FFRT, uydu dışlama, fix-and-hold |
-| NL teşhisi | `gps_processing/processing/diagnostics.py` | Koordinat sabit, float N1 kesirlerinin dağılımı; ürün/model tutarlılığı |
-| Makine öğrenmesi | `gps_processing/processing/ml/` | GBRT stokastik model, bias'a duyarlı AR doğrulayıcı, kendi kendini eğiten çözülebilirlik modeli (`fixability.py`) |
-| Analiz | `gps_processing/analysis.py` | ENU hataları, yakınsama süresi, yöntem istatistikleri, uydu seçimi / DOP raporu |
-| Uydu seçimi | `gps_processing/processing/selection.py` | DOP/WDOP (toplu), FIBO-GNSS, geri eleme, yerel arama; epok ve uydu analiz tabloları |
-| Dışa aktarım | `gps_processing/io/export.py` | CSV, çok sayfalı Excel ve JSON özet |
-| İşlem servisi | `gps_processing/pipeline.py` | Tüm aşamaların açık veri akışı ve ilerleme olayları |
-| CLI | `gps_processing/cli.py` | Dosya yolları ve işlem seçenekleri |
-| Arayüz | `gps_processing/ui/app.py`, `widgets.py` | Tk masaüstü sekmeleri, dosya seçimi, kuyrukla güvenli arka plan işlemi |
-
-EKF seçenekleri ve yöntem karşılaştırması (CLI):
+**Komut satırı.** Depodaki örnek veriyle float PPP çözümü:
 
 ```bash
-python -m gps_processing --sp3-before Data/…260….SP3 --sp3-day Data/…270….SP3 --sp3-after Data/…280….SP3 \
-  --rinex Data/madr3270.23o --estimator ekf --ml-weighting \
-  --reference-xyz 4849202.3940 -360328.9929 4114913.1862 \
-  --compare 'Sequential LS (v2.0)' 'EKF' 'Adaptive + robust EKF' 'EKF + ML weighting' --output results
+python3 -m gps_processing \
+  --sp3-before Data/IGS0OPSFIN_20233260000_01D_15M_ORB.SP3 \
+  --sp3-day Data/IGS0OPSFIN_20233270000_01D_15M_ORB.SP3 \
+  --sp3-after Data/IGS0OPSFIN_20233280000_01D_15M_ORB.SP3 \
+  --rinex Data/madr3270.23o --elevation-mask 10 --output results
 ```
 
-Seçenekler: `--estimator sequential|ekf|adaptive-ekf`, `--dynamics static|kinematic`, `--no-troposphere`, `--no-physical-corrections`, `--no-robust`, `--robust-method igg3|huber|danish`, `--outlier-test none|global|baarda|pope`, `--test-alpha`, `--test-power`, `--global-alpha`, `--max-exclusions`, `--integer-method ils|lambda|bootstrap|cascade`, `--ar-success-rate`, `--ar-validation ffrt|ratio|ml|ffrt+ml|ratio+ml`, `--ar-failure-rate`, `--ar-min-ambiguities`, `--ar-max-exclusions`, `--ar-min-elevation`, `--ar-min-arc`, `--ar-hold`, `--ar-fixability`, `--ml-weighting`, `--ml-validator`. Yer modelleri: `--ocean-loading BLQ`, `--erp ERP`, `--attitude ATT.OBX`, `--no-shapiro`, `--no-satellite-pcv`. Teşhis: `--diagnose-nl`. `sequential` v2.0 sonucunu değiştirmeden üretir.
+Başlıca seçenekler şunlardır: `--technique PPP|PPP-AR/SDBS|PPP-AR/DCM|PPP-AR/IPC`, `--systems G E C`, `--ar-products`, `--clock-file`, `--antex`, `--estimator sequential|ekf|adaptive-ekf`, `--dynamics static|kinematic`, `--ar-validation ffrt|ratio|ml|ffrt+ml|ratio+ml`, `--selection`, `--diagnose-nl`. Birden fazla yöntem `--compare` ile aynı veride karşılaştırılabilir. Tam liste için `python3 -m gps_processing --help` kullanılır.
 
-Ayar dosyası: `--write-config run.json` bütün ayarları JSON'a yazar; `--config run.json` (JSON; Python 3.11+/tomli ile TOML; PyYAML ile YAML) okur, komut satırındaki seçenekler dosyayı ezer. Arayüz aynı `ProcessingConfig` alanlarını kullanır.
+**Ayar dosyası.** `--write-config run.json` bütün ayarları bir dosyaya yazar, `--config run.json` bu dosyayı okur. Komut satırında verilen seçenekler dosyadaki değerlerin yerine geçer.
 
-Bağımlılıklar: numpy, pandas, openpyxl, scipy. İsteğe bağlı: `pip install .[ml]` (scikit-learn, joblib: kalibre doğrulayıcılar ve karşılaştırma), `.[config]` (YAML/TOML). scikit-learn yoksa bağımlılıksız lojistik doğrulayıcı kullanılır.
-
-Kütüphane kullanımı:
+**Python'dan kullanım.**
 
 ```python
 from pathlib import Path
@@ -158,51 +76,88 @@ from gps_processing.models import ProcessingConfig
 from gps_processing.pipeline import run
 
 config = ProcessingConfig(
-    Path('before.SP3'), Path('day.SP3'), Path('after.SP3'),
-    Path('observations.rnx'), output=Path('results'), elevation_mask=10,
+    Path('Data/before.SP3'), Path('Data/day.SP3'), Path('Data/after.SP3'),
+    Path('Data/observations.rnx'), output=Path('results'), elevation_mask=10,
 )
 result = run(config, progress=lambda percent, message: print(percent, message))
 print(result.positions)
 ```
 
-## Korunan bölümler ve değişiklikler
+## Veri klasörü
 
-Yedi özgün Python dosyası ve eski arayüzün resimleri **`archive/v1_2023/` altında değiştirilmeden saklanmıştır**; yazılım bunları kullanmaz. Ara Excel dosyalarına bağımlılık kaldırılmıştır; ara çıktılar artık yalnız dışa aktarım aşamasında üretilir.
+Girdi dosyaları proje kökündeki `Data/` klasöründe bulunmalıdır; arayüz ve komut satırı bu klasörün dışındaki girdileri kabul etmez. Alt klasörler kullanılabilir. PPP için ölçüm gününün SP3 dosyası ve gözlem dosyası gerekir; önceki ve sonraki günün SP3 dosyaları enterpolasyonu gün sınırlarında iyileştirir. PPP-AR için ayrıca bias veya FCB ürünü gerekir. Arayüzdeki **Data klasöründeki verileri seç** düğmesi uygun dosyaları SP3 başlık tarihlerine göre seçer. Yazılım bu klasördeki dosyaları silmez veya taşımaz.
 
-Sabit 32 uydu/900 saniye varsayımıyla SP3 satır sayma yerine gerçek epoklar okunur. Saat tahminindeki Random Forest yerine deterministik doğrusal enterpolasyon kullanılır; Lagrange hesabı büyük mutlak zamanlarla polinom üretmek yerine merkezlenmiş barycentric yöntemle yapılır. Bu nedenle sonuçlar eski betiklerle bit düzeyinde aynı değildir. Konum hesabında uydu/epok eşleştirmesi anahtarlarla yapılır, düşük yükseklikli gözlemler gerçekten elenir, tüm çözülen epoklar saklanır. Kestirim saat durumunu her epokta serbest bırakır; faz kilit kaybı işareti, 120 saniyeden uzun boşluk veya 5 metreden büyük MW değişiminde ilgili belirsizliği sıfırlar. Bu eşikler temel araştırma varsayımlarıdır.
-
-FCB referans dosya alanı korunmuştur; FCB kestirimi henüz uygulanmadı. PPP-AR/SDBS ve PPP-AR/DCM araştırma çözücüleri ayrı modüllerdedir. Makine öğrenmesi ayrı bir yöntem değil, EKF ve AR kestirimine eklenen bileşenler olarak uygulanmıştır (docs/EKF_ML.md); özgün Random Forest kaynağı `archive/v1_2023/` altında korunur. RINEX 2 de desteklenmez. Harici model seçenekleri, ilgili model eklendiğinde `ProcessingConfig` üzerinden işlem servisine bağlanabilir.
+Depoda yalnızca örnek veri bulunur: MADR istasyonunun 23 Kasım 2023 tarihli, 30 saniye aralıklı RINEX 2.11 dosyası ve üç günlük IGS SP3 dosyaları. Deney verileri ve ürünler yerelde tutulur, git'e eklenmez.
 
 ## Çıktılar
 
-Her işlem, seçilen çıktı klasörünün (varsayılan `results/`) altında kendi klasörüne yazılır: `<yıl>_<yılın günü>_<SSDDss>` (işlemin başlama zamanı, örneğin `results/2026_302_143512/`; aynı saniyede ikinci işlem `_2` eki alır). Karşılaştırmalar bu klasörün `comparison/`, FCB kestirimi `fcb/` alt klasörüne yazılır; işlemler birbirine karışmaz. Klasörde `results.xlsx`, `summary.json` ve her tablo için CSV bulunur:
+Her işlem, çıktı klasörünün (varsayılan `results/`) altında başlama zamanıyla adlandırılan ayrı bir klasöre yazılır; örneğin `results/2026_302_143512/`. Klasörde çok sayfalı `results.xlsx`, `summary.json` ve her tablo için bir CSV dosyası bulunur. Başlıca tablolar şunlardır:
 
-- `combine_sp3`, `obs3_gps`, `mw_ion_gps`, `xyz0_apprx`
-- `result_gps`, `sat3_df`, `cll` (öncül), `cll_result` (son kovaryans)
-- `dx_1` (son epok durum güncellemesi), `n3_amb` (metre cinsinden float belirsizlik)
-- `xyz_result` (tüm epok koordinatları, alıcı saati, uydu sayısı, kod RMS)
-- `diagnostics` (çözülen/atlanmış epoklar; EKF'de NIS, adaptif katsayı, ağırlığı düşürülen uydular)
-- `residuals` (EKF: epok/uydu bazında kod/faz artıkları, yükseklik, SNR, yay uzunluğu — ML eğitim verisi)
-- `statistics` (ENU RMS, son hata, yakınsama, fix oranı); `ml_models.json` (öğrenilen modeller)
-- Karşılaştırmada `comparison/<yöntem>/` klasörleri ve `comparison/statistics.csv`
+- `xyz_result`: epok koordinatları, alıcı saati ve uydu sayısı;
+- `residuals`: epok ve uydu bazında kod ve faz artıkları;
+- `diagnostics`: çözülen ve atlanan epoklar, NIS ve robust ağırlıklar;
+- `statistics`: ENU RMS hataları, yakınsama süresi ve fix oranı.
 
-SP3 koordinatları girişte km, çözümde metredir. SP3 saatleri mikrosaniyedir; alıcı saat çıktısı saniyedir. `epok` ölçüm günü gece yarısından itibaren saniyedir. Eksik gözlemler sıfır yerine eksik değer olarak tutulur. Mevcut örnek RINEX dosyası yaklaşık 12 dakikalık gözlem içerir; başlıktaki tüm güne ait kapsam gerçek kayıt sayısı değildir.
+Yöntem karşılaştırmaları `comparison/`, FCB kestirimi `fcb/` alt klasörüne yazılır. `epok` sütunu, ölçüm gününün başından itibaren geçen saniyedir.
 
-## Doğrulama ve bilimsel sınırlar
+## Klasör yapısı
+
+| Klasör veya dosya | İçerik |
+|---|---|
+| `TOGU-GPS Processing.py` | Arayüzü açan başlatıcı |
+| `gps_processing/` | Yazılımın tamamı: dosya okuyucuları (`io/`), işlem çekirdeği (`processing/`), arayüz (`ui/`), komut satırı (`cli.py`) ve işlem servisi (`pipeline.py`) |
+| `experiments/` | Makale deneylerinin betikleri |
+| `tests/` | Birim testleri |
+| `docs/` | Yöntem belgeleri |
+| `manuscript/` | Makale kaynakları ve derleme betiği; çıktı belgeler git'e eklenmez |
+| `Data/` | Örnek veri ve yerel deney verileri |
+| `archive/v1_2023/` | 2023'teki ilk sürümün özgün betikleri; değiştirilmeden saklanır, yazılım bunları kullanmaz |
+
+`processing/` klasöründe EKF çekirdeği `engine.py` ve `estimation/`, PPP-AR `ar/`, FCB kestirimi `fcb/`, makine öğrenmesi `ml/`, uydu seçimi `selection.py`, NL teşhisi `diagnostics.py` dosyalarındadır. v2.0'ın sıralı en küçük kareler çözücüsü karşılaştırma için `sequential.py` içinde değiştirilmeden tutulur.
+
+## Yöntem belgeleri
+
+| Belge | Konu |
+|---|---|
+| [PPP_AR.md](docs/PPP_AR.md) | PPP-AR kullanıcı modelleri, ürün sözleşmesi ve denklemler |
+| [EKF_ML.md](docs/EKF_ML.md) | EKF, robust kestirim, kalite testleri ve makine öğrenmesi bileşenleri |
+| [FCB.md](docs/FCB.md) | Referans ağdan FCB kestirimi ve doğrulama |
+| [GNSS.md](docs/GNSS.md) | GPS, Galileo ve BeiDou işleme |
+| [MODELS.md](docs/MODELS.md) | Fiziksel modeller ve NL teşhisi |
+| [ATMOSPHERE.md](docs/ATMOSPHERE.md) | İyonosfer ve troposfer ürünleri |
+| [SELECTION.md](docs/SELECTION.md) | Uydu seçimi, DOP ve ağırlıklı DOP analizi |
+
+## Testler
 
 ```bash
-python -m unittest discover -s tests -v
+python3 -m unittest discover tests
 ```
 
-Testler kombinasyonların iyonosferi gidermesini, polinom enterpolasyonunu, yükseklik geometrisini, bilinen sentetik konum/saat çözümünü, değişken uydu sayılı SP3 okumayı, gerçek örnek dosyaları ve desteklenmeyen modları kapsar. `tests/test_estimation.py` EKF'nin doğrusal LS ile eşdeğerliğini, ZWD/saat/konum kestirimini, robust aykırı gözlem reddini, kinematik izlemeyi, LAMBDA'nın kaba kuvvet ILS ile eşleşmesini, bootstrapping alt sınırını, PAR'ı, ML öğrenicilerini ve örnek veri karşılaştırmasını test eder.
+Testler kombinasyonları, enterpolasyonu, dosya okuyucularını, EKF ile en küçük kareler eşdeğerliğini, robust kestirimi, LAMBDA ve kısmi çözümü, ML bileşenlerini ve örnek veri çözümlerini kapsar.
 
-Bu çözüm üretim seviyesinde tam PPP değildir. EKF kestiricileri Saastamoinen troposferi, ZWD kestirimini ve periyodik relativistik terimi uygular; anten faz merkezi, phase wind-up, gelgit, kod bias düzeltmeleri ve ayrı hassas saat ürünü hâlâ uygulanmamıştır. SP3 saatleri ile kod RMS/koordinat değerleri jeodezik doğruluk kanıtı değildir. PPP-AR çekirdeği eklendi; gerçek ürün okuyucuları ve tam fiziksel PPP düzeltmeleri hâlâ gereklidir. Ayrıntılar docs/PPP_AR.md içindedir.
+## Sürüm geçmişi
 
-Tokat Gaziosmanpaşa Üniversitesi · Dr. Furkan KARLITEPE · furkan.karlitepe@gop.edu.tr
+| Sürüm | Başlıca değişiklik |
+|---|---|
+| v3.2 | İstatistiksel kalite kontrolü: global χ², Baarda ve Pope testleri; Huber ve Danish robust kestirimi |
+| v3.1 | BeiDou desteği; FIBO-GNSS2 ve ileri seçim yöntemleri |
+| v3.0 | Float PPP'de uydu seçimi ve DOP / ağırlıklı DOP analizi |
+| v2.9 | Literatüre dayalı gözden geçirme: yeni fiziksel modeller, AR karar zinciri, NL teşhisi, tek EKF çekirdeği, büyük FCB ağları |
+| v2.8 | GPS ve Galileo seçimli çözüm |
+| v2.7 | RINEX 2.11, katı yer gelgiti, referans ağdan FCB kestirimi |
+| v2.6 | Gerçek ürünler: RINEX CLK, Bias-SINEX OSB, GENFCB, ANTEX ve faz wind-up |
+| v2.5 | IPC kullanıcı modeli |
+| v2.4 | Bootstrapping ve kademeli yuvarlama tamsayı kestiricileri |
+| v2.2 | IONEX ve SINEX_TRO atmosfer ürünleri |
+| v2.1 | EKF, LAMBDA ile kısmi çözüm ve ilk makine öğrenmesi bileşenleri |
+| v2.0 | Modüler yapı; ilk sürümün betikleri `archive/v1_2023/` altına alındı |
 
+## Kapsam ve sınırlar
 
-## Data klasörü ile yeni işlem
+Yazılım bir araştırma aracıdır; sonuçlar ticari veya operasyonel PPP yazılımlarıyla doğrulanmadan jeodezik ürün olarak kullanılmamalıdır. Çözümler son işlem (post-processing) içindir; gerçek zamanlı işleme desteklenmez. PPP-AR'nin başarısı, kullanılan bias ürünlerinin yörünge ve saat ürünleriyle tutarlı olmasına bağlıdır. Bu nedenle yeni bir ürün setiyle çalışmadan önce NL teşhis testinin (`--diagnose-nl`) uygulanması önerilir.
 
-Her yeni işlemden önce gerekli girdi dosyalarını proje kökündeki `Data/` klasörüne koyun. PPP için önceki/ölçüm/sonraki gün SP3 ve RINEX 3 gözlem dosyası; PPP-AR için ayrıca yönteme uygun JSON saat/bias ürünü gerekir. Alt klasörler kullanılabilir. Arayüz dosya pencereleri Data içinde açılır; arayüz ve CLI Data dışındaki girdileri reddeder. Çıktı klasörü serbesttir.
+## Lisans ve atıf
 
-“Data klasöründeki verileri seç” önce eski seçimleri temizler, tam üç SP3 ve bir gözlem varsa SP3 başlık tarihlerine göre seçer. Birden çok veri setinde dosyaları Seç düğmeleriyle belirleyin. AR JSON dosyasını İşlem ayarları sekmesinde seçin. Veriler otomatik silinmez veya taşınmaz. CLI örneklerinde dosya yollarının başına `Data/` ekleyin; mevcut örnekleri kullanmak için önce bu dosyaları Data içine kopyalayın.
+MIT lisansı ile dağıtılır (`LICENSE`). Atıf bilgisi `CITATION.cff` dosyasındadır.
+
+Dr. Furkan KARLITEPE · Tokat Gaziosmanpaşa Üniversitesi, Harita Mühendisliği Bölümü
